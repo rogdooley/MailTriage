@@ -9,13 +9,13 @@ accounts:
       host: string
       port: int
       ssl: bool
-      folders: [string]   # default ["INBOX"]
+      folders: [string] # default ["INBOX"]
     identity:
       primary_address: string
       aliases: [string]
     secrets:
-      provider: string    # "bitwarden" (default)
-      reference: string   # provider-specific ID
+      provider: string # "bitwarden" (default)
+      reference: string # provider-specific ID
 
 rules:
   high_priority_senders: [string]
@@ -24,3 +24,7 @@ rules:
 tickets:
   enabled: bool
   plugins: [string]
+
+time:
+  timezone: string # e.g. America/New_York
+  workday_start: string # HH:MM (24h)
