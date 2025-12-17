@@ -1,0 +1,26 @@
+version: 1
+
+rootdir: path
+timezone: string
+
+accounts:
+  - id: string
+    imap:
+      host: string
+      port: int
+      ssl: bool
+      folders: [string]   # default ["INBOX"]
+    identity:
+      primary_address: string
+      aliases: [string]
+    secrets:
+      provider: string    # "bitwarden" (default)
+      reference: string   # provider-specific ID
+
+rules:
+  high_priority_senders: [string]
+  collapse_automated: bool
+
+tickets:
+  enabled: bool
+  plugins: [string]
