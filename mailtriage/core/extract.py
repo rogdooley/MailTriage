@@ -17,6 +17,19 @@ _SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style).*?>.*?</\1>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
 _BLOCK_END_RE = re.compile(r"(?i)</(p|div|li|tr|h1|h2|h3|h4|h5|h6)>")
 
+_HTML_MARKERS = (
+    "<html",
+    "<head",
+    "<body",
+    "<style",
+    "<script",
+    "<table",
+    "<div",
+    "<span",
+    "<meta",
+    "<!doctype",
+)
+
 
 @dataclass(frozen=True)
 class ExtractedContent:
@@ -38,6 +51,15 @@ def _decode_part(part: Message) -> str:
         return payload.decode(charset, errors="replace")
     except LookupError:
         return payload.decode("utf-8", errors="replace")
+
+
+def looks_like_html(text: str) -> bool:
+    if not text:
+        return False
+
+    sample = text.lstrip()[:2048].lower()
+
+    return any(marker in sample for marker in _HTML_MARKERS)
 
 
 def html_to_text(s: str) -> str:
@@ -85,7 +107,8 @@ def select_body(msg: Message) -> tuple[str, bool]:
             text_html = _decode_part(msg)
 
     if text_plain and text_plain.strip():
-        return text_plain, False
+        if not looks_like_html(text_plain):
+            return text_plain, False
 
     if text_html and text_html.strip():
         return html_to_text(text_html), True

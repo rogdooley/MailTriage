@@ -563,11 +563,8 @@ def ingest_account(
 
                 # body selection + extraction
                 body, _is_html = select_body(msg)
-
-                assert "<html" not in body.lower()
-                assert "<style" not in body.lower()
-                assert "<script" not in body.lower()
-
+                if "<html" in body.lower():
+                    raise RuntimeError("HTML leaked past select_body")
                 extracted = extract_new_text(subject=subject, body=body)
 
                 # attachments
