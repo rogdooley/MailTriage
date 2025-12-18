@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 import yaml
 
@@ -46,9 +46,23 @@ class AccountConfig:
 
 
 @dataclass(frozen=True)
+class SuppressRules:
+    senders: List[str] = field(default_factory=list)
+    subjects: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ArrivalOnlyRules:
+    senders: List[str] = field(default_factory=list)
+    subjects: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class RulesConfig:
-    high_priority_senders: list[str]
-    collapse_automated: bool
+    high_priority_senders: List[str] = field(default_factory=list)
+    collapse_automated: bool = True
+    suppress: SuppressRules = field(default_factory=SuppressRules)
+    arrival_only: ArrivalOnlyRules = field(default_factory=ArrivalOnlyRules)
 
 
 @dataclass(frozen=True)
@@ -170,13 +184,28 @@ def load_config(path: Path) -> AppConfig:
 
     if not isinstance(rules_raw, dict):
         raise ConfigError("rules must be a mapping")
-    _reject_unknown(rules_raw, {"high_priority_senders", "collapse_automated"}, "rules")
+    _reject_unknown(
+        rules_raw,
+        {"high_priority_senders", "collapse_automated", "suppress", "arrival_only"},
+        "rules",
+    )
+
+    suppress_raw = rules_raw.get("suppress", {}) or {}
+    arrival_raw = rules_raw.get("arrival_only", {}) or {}
     hp = rules_raw.get("high_priority_senders") or []
     if not isinstance(hp, list) or not all(isinstance(x, str) for x in hp):
         raise ConfigError("rules.high_priority_senders must be a list of strings")
     rules_cfg = RulesConfig(
         high_priority_senders=[str(x) for x in hp],
         collapse_automated=bool(rules_raw.get("collapse_automated", True)),
+        suppress=SuppressRules(
+            senders=suppress_raw.get("senders", []),
+            subjects=suppress_raw.get("subjects", []),
+        ),
+        arrival_only=ArrivalOnlyRules(
+            senders=arrival_raw.get("senders", []),
+            subjects=arrival_raw.get("subjects", []),
+        ),
     )
 
     if not isinstance(tickets_raw, dict):
