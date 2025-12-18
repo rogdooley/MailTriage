@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html as _html
+import re
 from dataclasses import dataclass
 from email.message import Message
 
@@ -9,6 +11,11 @@ __all__ = [
     "extract_new_text",
     "extract_attachment_names",
 ]
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style).*?>.*?</\1>")
+_BR_RE = re.compile(r"(?i)<br\s*/?>")
+_BLOCK_END_RE = re.compile(r"(?i)</(p|div|li|tr|h1|h2|h3|h4|h5|h6)>")
 
 
 @dataclass(frozen=True)
@@ -33,26 +40,57 @@ def _decode_part(part: Message) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
-def select_body(msg: Message) -> tuple[str | None, bool]:
+def html_to_text(s: str) -> str:
+    if not s:
+        return ""
+    s = _SCRIPT_STYLE_RE.sub("", s)
+    s = _BR_RE.sub("\n", s)
+    s = _BLOCK_END_RE.sub("\n", s)
+    s = _TAG_RE.sub("", s)
+    s = _html.unescape(s)
+    # normalize whitespace
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    s = "\n".join(line.strip() for line in s.splitlines())
+    return s.strip()
+
+
+def select_body(msg: Message) -> tuple[str, bool]:
     """
-    Returns (text, is_html).
+    Returns (text, is_html_source).
+    Always returns *plain text* suitable for Markdown.
     """
+    text_plain: str | None = None
+    text_html: str | None = None
+
     if msg.is_multipart():
         for part in msg.walk():
-            if part.get_content_maintype() != "text":
+            ctype = (part.get_content_type() or "").lower()
+            disp = (part.get("Content-Disposition") or "").lower()
+
+            # skip attachments
+            if "attachment" in disp:
                 continue
-            subtype = part.get_content_subtype()
-            if subtype == "plain":
-                return _decode_part(part), False
-            if subtype == "html":
-                return _decode_part(part), True
-        return None, False
+
+            if ctype == "text/plain" and text_plain is None:
+                text_plain = _decode_part(part)
+
+            elif ctype == "text/html" and text_html is None:
+                text_html = _decode_part(part)
     else:
-        if msg.get_content_type() == "text/plain":
-            return _decode_part(msg), False
-        if msg.get_content_type() == "text/html":
-            return _decode_part(msg), True
-    return None, False
+        ctype = (msg.get_content_type() or "").lower()
+        if ctype == "text/plain":
+            text_plain = _decode_part(msg)
+        elif ctype == "text/html":
+            text_html = _decode_part(msg)
+
+    if text_plain and text_plain.strip():
+        return text_plain, False
+
+    if text_html and text_html.strip():
+        return html_to_text(text_html), True
+
+    return "", False
 
 
 def normalize_text(text: str) -> str:
@@ -69,6 +107,19 @@ def normalize_text(text: str) -> str:
             blank = 0
             out.append(ln)
     return "\n".join(out).strip()
+
+
+def normalize_excerpt(s: str, max_lines: int = 12, max_chars: int = 1500) -> str:
+    s = s.strip()
+    if not s:
+        return ""
+    # cap chars first
+    if len(s) > max_chars:
+        s = s[:max_chars].rstrip() + "…"
+    # cap lines
+    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
+    lines = lines[:max_lines]
+    return "\n".join(lines)
 
 
 def strip_structured_blocks(text: str) -> tuple[str, bool]:

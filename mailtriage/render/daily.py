@@ -242,6 +242,30 @@ def render_day(
 # ----------------------------
 
 
+def normalize_excerpt(
+    s: str,
+    *,
+    max_lines: int = 12,
+    max_chars: int = 1500,
+) -> str:
+    if not s:
+        return ""
+
+    s = s.strip()
+
+    # Cap characters first (prevents pathological HTML dumps)
+    if len(s) > max_chars:
+        s = s[:max_chars].rstrip() + "…"
+
+    # Normalize lines
+    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines.append("…")
+
+    return "\n".join(lines)
+
+
 def render_markdown(data: dict[str, Any], explain: bool) -> str:
     lines: list[str] = []
 
@@ -259,9 +283,10 @@ def render_markdown(data: dict[str, Any], explain: bool) -> str:
             lines.append(f"### {m['from']}")
             lines.append(f"**{m['subject']}**")
             lines.append("")
-            if m["excerpt"]:
-                for ln in m["excerpt"].splitlines():
-                    lines.append(f"- {ln}")
+            excerpt = normalize_excerpt(m["excerpt"])
+            if excerpt:
+                for ln in excerpt.splitlines():
+                    lines.append(f"  - {ln}")
             if m["has_attachments"]:
                 lines.append(f"- Attachments: {', '.join(m['attachments'])}")
             lines.append(f"- Time: {_fmt_time(m['timestamp_utc'])}")
@@ -281,8 +306,9 @@ def render_markdown(data: dict[str, Any], explain: bool) -> str:
             lines.append("")
             for m in t["messages"]:
                 lines.append(f"- **{_fmt_time(m['timestamp_utc'])} — {m['from']}**")
-                if m["excerpt"]:
-                    for ln in m["excerpt"].splitlines():
+                excerpt = normalize_excerpt(m["excerpt"])
+                if excerpt:
+                    for ln in excerpt.splitlines():
                         lines.append(f"  - {ln}")
             lines.append("")
         lines.append("---")
