@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from email.message import Message
 
+__all__ = [
+    "ExtractedContent",
+    "select_body",
+    "extract_new_text",
+    "extract_attachment_names",
+]
+
 
 @dataclass(frozen=True)
 class ExtractedContent:
@@ -11,6 +18,19 @@ class ExtractedContent:
     trimmed_quote: bool
     trimmed_signature: bool
     has_structured_block: bool
+
+
+def _decode_part(part: Message) -> str:
+    payload = part.get_payload(decode=True)
+
+    if not isinstance(payload, (bytes, bytearray)):
+        return ""
+
+    charset = part.get_content_charset() or "utf-8"
+    try:
+        return payload.decode(charset, errors="replace")
+    except LookupError:
+        return payload.decode("utf-8", errors="replace")
 
 
 def select_body(msg: Message) -> tuple[str | None, bool]:
