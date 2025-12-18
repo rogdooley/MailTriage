@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import defaultdict
 from datetime import date, datetime, timezone
+from email.header import decode_header
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,7 @@ def _fmt_time(iso_utc: str) -> str:
 def _match_any(patterns: list[str], value: str) -> bool:
     value = value.lower()
     for pat in patterns:
-        if re.search(pat, value, re.IGNORECASE):
+        if pat.lower() in value:
             return True
     return False
 
@@ -57,6 +57,32 @@ def classify_message(msg: dict[str, Any], rules) -> str:
         return "high_priority"
 
     return "normal"
+
+
+def decode_and_normalize_subject(value: Any) -> str:
+    if not value:
+        return ""
+
+    # Ensure string
+    if not isinstance(value, str):
+        value = str(value)
+
+    parts: list[str] = []
+    for part, charset in decode_header(value):
+        if isinstance(part, bytes):
+            try:
+                parts.append(part.decode(charset or "utf-8", errors="replace"))
+            except Exception:
+                parts.append(part.decode("utf-8", errors="replace"))
+        else:
+            parts.append(part)
+
+    subject = "".join(parts)
+
+    # Normalize whitespace
+    subject = " ".join(subject.split())
+
+    return subject.strip()
 
 
 # ----------------------------
@@ -115,6 +141,8 @@ def render_day(
     explain: bool = False,
 ) -> None:
     messages = load_messages_for_day(db, day)
+    for msg in messages:
+        msg["subject"] = decode_and_normalize_subject(msg.get("subject") or "")
     threads = load_threads_for_messages(db, messages)
 
     buckets: dict[str, list[dict[str, Any]]] = {

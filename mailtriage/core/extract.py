@@ -30,6 +30,19 @@ _HTML_MARKERS = (
     "<!doctype",
 )
 
+_QUOTE_MARKERS = (
+    ">",
+    "on ",
+)
+
+_SIGNATURE_MARKERS = (
+    "--",
+    "thanks,",
+    "thank you,",
+    "best,",
+    "regards,",
+)
+
 
 @dataclass(frozen=True)
 class ExtractedContent:
@@ -132,17 +145,41 @@ def normalize_text(text: str) -> str:
     return "\n".join(out).strip()
 
 
-def normalize_excerpt(s: str, max_lines: int = 12, max_chars: int = 1500) -> str:
-    s = s.strip()
+def normalize_excerpt(
+    s: str,
+    *,
+    max_lines: int = 5,
+    max_chars: int = 700,
+) -> str:
     if not s:
         return ""
-    # cap chars first
-    if len(s) > max_chars:
-        s = s[:max_chars].rstrip() + "…"
-    # cap lines
-    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-    lines = lines[:max_lines]
-    return "\n".join(lines)
+
+    lines_out: list[str] = []
+    for raw in s.splitlines():
+        ln = raw.strip()
+        if not ln:
+            continue
+
+        low = ln.lower()
+
+        if ln.startswith(">"):
+            break
+
+        if low.startswith("on ") and "wrote:" in low:
+            break
+
+        if low in _SIGNATURE_MARKERS or low.startswith(_SIGNATURE_MARKERS):
+            break
+
+        lines_out.append(ln)
+        if len(lines_out) >= max_lines:
+            break
+
+    text = "\n".join(lines_out)
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "…"
+
+    return text
 
 
 def strip_structured_blocks(text: str) -> tuple[str, bool]:
