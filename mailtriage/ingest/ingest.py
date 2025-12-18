@@ -337,6 +337,20 @@ def _normalize_subject(subject: str) -> str:
     return s
 
 
+def decode_mime_header(value) -> str:
+    if not value:
+        return ""
+
+    # Ensure it's a string (Header objects need this)
+    if not isinstance(value, str):
+        value = str(value)
+
+    try:
+        return str(make_header(decode_header(value)))
+    except Exception:
+        return value
+
+
 def compute_thread_id(msg: Message) -> str:
     root = _canonical_root_reference(msg)
     if root:
@@ -345,15 +359,6 @@ def compute_thread_id(msg: Message) -> str:
         subj = _normalize_subject(decode_mime_header(msg.get("Subject", "")))
         basis = f"subj:{subj}"
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()
-
-
-def decode_mime_header(value: str | None) -> str:
-    if not value:
-        return ""
-    try:
-        return str(make_header(decode_header(value)))
-    except Exception:
-        return value
 
 
 # --- DB writes -------------------------------------------------------------
