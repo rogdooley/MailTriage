@@ -12,6 +12,16 @@ from typing import Any
 # ----------------------------
 
 
+def _query_all(db, sql: str, params: tuple = ()) -> list[dict]:
+    """
+    Execute a SELECT and return all rows as dicts.
+    Compatible with the existing Database abstraction.
+    """
+    cur = db.conn.execute(sql, params)
+    rows = cur.fetchall()
+    return [dict(row) for row in rows]
+
+
 def _fmt_time(iso_utc: str) -> str:
     dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
     return dt.astimezone(timezone.utc).strftime("%H:%M")
@@ -58,7 +68,8 @@ def load_messages_for_day(db, day: date) -> list[dict[str, Any]]:
     start = f"{day.isoformat()}T00:00:00Z"
     end = f"{day.isoformat()}T23:59:59Z"
 
-    rows = db.query_all(
+    rows = _query_all(
+        db,
         """
         SELECT *
         FROM messages
@@ -77,7 +88,8 @@ def load_threads_for_messages(db, messages: list[dict[str, Any]]) -> dict[str, d
         return {}
 
     placeholders = ",".join("?" for _ in thread_ids)
-    rows = db.query_all(
+    rows = _query_all(
+        db,
         f"""
         SELECT *
         FROM threads
