@@ -9,6 +9,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import message_from_bytes
+from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Iterable
@@ -341,9 +342,18 @@ def compute_thread_id(msg: Message) -> str:
     if root:
         basis = f"ref:{root}"
     else:
-        subj = _normalize_subject(msg.get("Subject", ""))
+        subj = _normalize_subject(decode_mime_header(msg.get("Subject", "")))
         basis = f"subj:{subj}"
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def decode_mime_header(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return str(make_header(decode_header(value)))
+    except Exception:
+        return value
 
 
 # --- DB writes -------------------------------------------------------------
@@ -537,7 +547,7 @@ def ingest_account(
                     continue
 
                 # basic headers
-                subject = (msg.get("Subject") or "").strip()
+                subject = decode_mime_header((msg.get("Subject") or "").strip())
                 sender = (msg.get("From") or "").strip()
 
                 to_addrs = [
