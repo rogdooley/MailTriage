@@ -205,6 +205,7 @@ def render_day(
                     {
                         "message_id": m["message_id"],
                         "from": m["sender"],
+                        "subject": m.get("subject") or "",
                         "excerpt": m["extracted_new_text"],
                         "timestamp_utc": m["date_utc"],
                     }
