@@ -86,9 +86,11 @@ class BitwardenSecretProvider(SecretProvider):
 
 
 def _secret_provider(provider_name: str) -> SecretProvider:
-    # v0.1: only Bitwarden. Others can be added later.
-    if provider_name.lower() == "bitwarden":
+    p = provider_name.lower()
+    if p == "bitwarden":
         return BitwardenSecretProvider()
+    if p == "env":
+        return EnvSecretProvider()
     raise SecretProviderError(f"Unsupported secrets provider: {provider_name}")
 
 
