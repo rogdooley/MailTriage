@@ -299,8 +299,8 @@ def render_markdown(data: dict[str, Any], explain: bool) -> str:
         lines.append("## Other Messages")
         lines.append("")
         for t in data["threads"]:
-            subject = t["messages"][0]["excerpt"] or "(no subject)"
-            lines.append(f"### Thread: {subject}")
+            subject = t["messages"][0].get("subject") or "(no subject)"
+            lines.append(f"### {subject}")
             if t["participants"]:
                 lines.append(f"Participants: {', '.join(t['participants'])}")
             lines.append("")
