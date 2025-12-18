@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mailtriage.core.config import load_config
 from mailtriage.core.db import Database
 from mailtriage.core.schema import ensure_schema_v1, verify_schema_hash
 from mailtriage.core.timewindow import compute_windows
+from mailtriage.ingest.ingest import ingest_account
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,15 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--date", type=str, default=None)  # YYYY-MM-DD
 
     return p
+
+
+def _parse_utc_z(ts: str) -> datetime:
+    # Accepts "YYYY-MM-DDTHH:MM:SSZ"
+    if not ts.endswith("Z"):
+        raise ValueError(f"Expected UTC Z timestamp, got: {ts}")
+    base = ts[:-1]
+    dt = datetime.fromisoformat(base)
+    return dt.replace(tzinfo=timezone.utc)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,8 +70,21 @@ def main(argv: list[str] | None = None) -> int:
             date=args.date,
         )
 
-        # Step 8 ends here. Step 9+ will add IMAP ingestion & rendering.
+        # bookkeeping only (optional)
         for w in windows:
             db.record_run_window(w.start_utc, w.end_utc)
+
+        # ingestion
+        for w in windows:
+            start_dt = _parse_utc_z(w.start_utc)
+            end_dt = _parse_utc_z(w.end_utc)
+
+            for acct in cfg.accounts:
+                ingest_account(
+                    db=db,
+                    account_cfg=acct,
+                    window_start_utc=start_dt,
+                    window_end_utc=end_dt,
+                )
 
     return 0
