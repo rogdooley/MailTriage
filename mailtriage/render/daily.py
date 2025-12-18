@@ -271,28 +271,36 @@ def render_day(
 # ----------------------------
 
 
-def normalize_excerpt(
-    s: str,
-    *,
-    max_lines: int = 12,
-    max_chars: int = 1500,
-) -> str:
+def normalize_excerpt(s: str) -> str:
     if not s:
         return ""
 
-    s = s.strip()
+    lines_out: list[str] = []
+    for raw in s.splitlines():
+        ln = raw.strip()
+        if not ln:
+            break  # stop at first blank line
 
-    # Cap characters first (prevents pathological HTML dumps)
-    if len(s) > max_chars:
-        s = s[:max_chars].rstrip() + "…"
+        low = ln.lower()
 
-    # Normalize lines
-    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
-        lines.append("…")
+        # quoted history
+        if ln.startswith(">"):
+            break
+        if low.startswith("on ") and "wrote:" in low:
+            break
 
-    return "\n".join(lines)
+        # signatures
+        if ln == "--":
+            break
+        if low in {"thanks,", "thank you,", "best,", "regards,"}:
+            break
+
+        lines_out.append(ln)
+
+        if len(lines_out) == 3:
+            break
+
+    return "\n".join(lines_out)
 
 
 def render_markdown(data: dict[str, Any], explain: bool) -> str:
