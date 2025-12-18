@@ -555,6 +555,8 @@ def ingest_account(
                 raw = msg.get("Subject")
                 print("RAW SUBJECT TYPE:", type(raw))
                 print("RAW SUBJECT REPR:", repr(raw))
+                decoded = str(make_header(decode_header(raw)))
+                print("DECODED SUBJECT:", repr(decoded))
                 subject = decode_mime_header((msg.get("Subject") or "").strip())
                 sender = (msg.get("From") or "").strip()
 
