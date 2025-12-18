@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from email.header import decode_header
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 # ----------------------------
 # Rule helpers
@@ -22,9 +23,10 @@ def _query_all(db, sql: str, params: tuple = ()) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def _fmt_time(iso_utc: str) -> str:
+def _fmt_time(iso_utc: str, tz_name: str) -> str:
     dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
-    return dt.astimezone(timezone.utc).strftime("%H:%M")
+    tz = ZoneInfo(tz_name)
+    return dt.astimezone(tz).strftime("%H:%M")
 
 
 def _match_any(patterns: list[str], value: str) -> bool:
