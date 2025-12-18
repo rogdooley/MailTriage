@@ -19,7 +19,23 @@ accounts:
 
 rules:
   high_priority_senders: [string]
-  collapse_automated: bool
+  collapse_automated: true
+
+  suppress:
+    senders:
+      - "cron@"
+      - "no-reply@"
+    subjects:
+      - "^cron\\b"
+      - "^backup report"
+
+  arrival_only:
+    senders:
+      - "backup@"
+      - "monitoring@"
+    subjects:
+      - "^cron\\b"
+      - "^daily report"
 
 tickets:
   enabled: bool
