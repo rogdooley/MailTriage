@@ -225,9 +225,9 @@ def _fetch_rfc822_and_internaldate(
         chunk = uid_list[i : i + chunk_size]
         seq = ",".join(chunk).encode("ascii", "ignore")
 
-        typ, data = conn.fetch(seq, "(RFC822.PEEK INTERNALDATE)")
+        typ, data = conn.fetch(seq, "(BODY.PEEK[] INTERNALDATE)")
         if typ != "OK":
-            raise RuntimeError("IMAP RFC822.PEEK fetch failed")
+            raise RuntimeError("IMAP BODY.PEEK[] fetch failed")
 
         # data is a list of tuples + b')' separators
         for item in data:
@@ -235,7 +235,7 @@ def _fetch_rfc822_and_internaldate(
                 continue
             meta, raw = item
             # meta begins with the uid number as bytes, e.g. b'123 (RFC822 {..} ...'
-            uid = meta.split(b" ", 1)[0].decode("ascii", "replace")
+            uid = meta.decode("ascii", "replace").split()[0]
             internal_utc = _parse_internaldate_to_utc(meta)
             out[uid] = FetchedMessage(
                 uid=uid, raw_rfc822=raw, internaldate_utc=internal_utc
