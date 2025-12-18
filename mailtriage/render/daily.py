@@ -265,7 +265,9 @@ def render_day(
 
     json_path.write_text(json.dumps(json_out, indent=2), encoding="utf-8")
 
-    md_path.write_text(render_markdown(json_out, explain), encoding="utf-8")
+    md_path.write_text(
+        render_markdown(json_out, explain, tz_name=rules.timezone), encoding="utf-8"
+    )
 
 
 # ----------------------------
@@ -305,7 +307,7 @@ def normalize_excerpt(s: str) -> str:
     return "\n".join(lines_out)
 
 
-def render_markdown(data: dict[str, Any], explain: bool) -> str:
+def render_markdown(data: dict[str, Any], explain: bool, *, tz_name: str) -> str:
     lines: list[str] = []
 
     lines.append(f"# MailTriage — {data['date']}")
@@ -328,7 +330,7 @@ def render_markdown(data: dict[str, Any], explain: bool) -> str:
                     lines.append(f"  - {ln}")
             if m["has_attachments"]:
                 lines.append(f"- Attachments: {', '.join(m['attachments'])}")
-            lines.append(f"- Time: {_fmt_time(m['timestamp_utc'])}")
+            lines.append(f"- Time: {_fmt_time(m['timestamp_utc'], tz_name)}")
             lines.append("")
         lines.append("---")
         lines.append("")
@@ -344,7 +346,9 @@ def render_markdown(data: dict[str, Any], explain: bool) -> str:
                 lines.append(f"Participants: {', '.join(t['participants'])}")
             lines.append("")
             for m in t["messages"]:
-                lines.append(f"- **{_fmt_time(m['timestamp_utc'])} — {m['from']}**")
+                lines.append(
+                    f"- **{_fmt_time(m['timestamp_utc'], tz_name)} — {m['from']}**"
+                )
                 excerpt = normalize_excerpt(m["excerpt"])
                 if excerpt:
                     for ln in excerpt.splitlines():
@@ -358,7 +362,7 @@ def render_markdown(data: dict[str, Any], explain: bool) -> str:
         lines.append("## Arrivals (No Action Needed)")
         lines.append("")
         for m in data["arrival_only"]:
-            lines.append(f"- {_fmt_time(m['timestamp_utc'])} — {m['subject']}")
+            lines.append(f"- {_fmt_time(m['timestamp_utc'], tz_name)} — {m['subject']}")
         lines.append("")
         lines.append("---")
         lines.append("")
