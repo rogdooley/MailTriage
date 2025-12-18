@@ -30,7 +30,7 @@ def _fmt_time(iso_utc: str) -> str:
 def _match_any(patterns: list[str], value: str) -> bool:
     value = value.lower()
     for pat in patterns:
-        if re.search(pat, value):
+        if re.search(pat, value, re.IGNORECASE):
             return True
     return False
 
