@@ -5,12 +5,14 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from mailtriage.core.config import load_config
 from mailtriage.core.db import Database
 from mailtriage.core.schema import ensure_schema_v1, verify_schema_hash
 from mailtriage.core.timewindow import compute_windows
 from mailtriage.ingest.ingest import ingest_account
+from mailtriage.render.daily import render_day
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,17 @@ def main(argv: list[str] | None = None) -> int:
                     account_cfg=acct,
                     window_start_utc=start_dt,
                     window_end_utc=end_dt,
+                )
+
+            local_date = start_dt.astimezone(ZoneInfo(cfg.time.timezone)).date()
+
+            for w in windows:
+                render_day(
+                    db=db,
+                    day=local_date,
+                    rootdir=cfg.rootdir,
+                    rules=cfg.rules,
+                    explain=False,  # we’ll wire the flag next
                 )
 
     return 0
