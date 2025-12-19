@@ -174,8 +174,13 @@ def render_window(
     window_end_utc: datetime,
     rootdir: Path,
     rules,
+    timezone: str,
 ) -> None:
-    tz = ZoneInfo(rules.timezone)
+    tz = ZoneInfo(timezone)
+
+    # ------------------------------------------------------------
+    # Load messages strictly within window
+    # ------------------------------------------------------------
 
     messages = load_messages_for_window(
         db,
@@ -184,70 +189,84 @@ def render_window(
     )
     threads = load_threads(db, messages)
 
-    hp_msgs = []
-    normal_msgs = []
-    arrival_msgs = []
+    hp_msgs: list[dict] = []
+    normal_msgs: list[dict] = []
+    arrival_msgs: list[dict] = []
 
     for m in messages:
-        c = classify(m, rules)
-        if c == "suppress":
+        cls = classify(m, rules)
+        if cls == "suppress":
             continue
-        if c == "high_priority":
+        if cls == "high_priority":
             hp_msgs.append(m)
-        elif c == "arrival_only":
+        elif cls == "arrival_only":
             arrival_msgs.append(m)
         else:
             normal_msgs.append(m)
 
-    # Threads containing HP senders are excluded from "Other"
+    # ------------------------------------------------------------
+    # Thread handling
+    # ------------------------------------------------------------
+
+    # Any thread containing HP senders is excluded from "Other"
     hp_thread_ids = {m["thread_id"] for m in hp_msgs if m.get("thread_id")}
 
-    grouped_threads = defaultdict(list)
+    grouped_threads: dict[str, list[dict]] = defaultdict(list)
+
     for m in normal_msgs:
         tid = m.get("thread_id")
         if not tid or tid in hp_thread_ids:
             continue
         grouped_threads[tid].append(m)
 
-    actionable_threads = {}
+    actionable_threads: dict[str, list[dict]] = {}
+
     for tid, msgs in grouped_threads.items():
         t = threads.get(tid)
         if not t:
             actionable_threads[tid] = msgs
             continue
 
-        if (
-            t.get("last_outbound_at_utc")
-            and t.get("last_inbound_at_utc")
-            and t["last_outbound_at_utc"] >= t["last_inbound_at_utc"]
-        ):
-            continue
+        last_in = t.get("last_inbound_at_utc")
+        last_out = t.get("last_outbound_at_utc")
+
+        if last_out and last_in and last_out >= last_in:
+            continue  # already replied
 
         actionable_threads[tid] = msgs
 
     hp_groups = build_high_priority_groups(hp_msgs, rules)
 
-    # ------------------------------------------------------------------
-    # Markdown
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
+    # Markdown rendering
+    # ------------------------------------------------------------
+
+    start_local = window_start_utc.astimezone(tz)
+    end_local = window_end_utc.astimezone(tz)
 
     lines: list[str] = []
 
     lines.append(
-        f"# MailTriage — {window_start_utc.astimezone(tz).strftime('%Y-%m-%d %H:%M')} → "
-        f"{window_end_utc.astimezone(tz).strftime('%H:%M')}"
+        f"# MailTriage — "
+        f"{start_local.strftime('%Y-%m-%d %H:%M')} → "
+        f"{end_local.strftime('%H:%M')}"
     )
-    lines.append(f"_Timezone: {rules.timezone}_")
+    lines.append(f"_Timezone: {timezone}_")
     lines.append("")
     lines.append("---")
     lines.append("")
+
+    # ---- High Priority ----
 
     if hp_groups:
         lines.append("## High Priority")
         lines.append("")
 
         for block in hp_groups.values():
-            sender_label = format_sender(block["display"], block["email"])
+            sender_label = format_sender(
+                block.get("sender_display"),
+                block.get("sender_email"),
+            )
             lines.append(f"### {sender_label}")
             lines.append("")
 
@@ -265,6 +284,8 @@ def render_window(
         lines.append("---")
         lines.append("")
 
+    # ---- Other Messages ----
+
     if actionable_threads:
         lines.append("## Other Messages")
         lines.append("")
@@ -277,14 +298,18 @@ def render_window(
             for m in msgs:
                 t = _fmt_time(m["date_utc"], tz)
                 lines.append(f"- **{t} — {m['sender']}**")
+
                 ex = normalize_excerpt(m["extracted_new_text"])
                 if ex:
                     for ln in ex.splitlines():
                         lines.append(f"  - {ln}")
+
             lines.append("")
 
         lines.append("---")
         lines.append("")
+
+    # ---- Arrival Only ----
 
     if arrival_msgs:
         lines.append("## Arrivals (No Action Needed)")
@@ -294,12 +319,15 @@ def render_window(
             lines.append(f"- {t} — {m.get('subject') or '(no subject)'}")
         lines.append("")
 
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
+    # Write output
+    # ------------------------------------------------------------
 
-    outdir = rootdir / window_start_utc.astimezone(tz).strftime("%Y/%m")
+    outdir = rootdir / start_local.strftime("%Y/%m")
     outdir.mkdir(parents=True, exist_ok=True)
 
-    day = window_start_utc.astimezone(tz).day
-    (outdir / f"{day:02d}.md").write_text("\n".join(lines), encoding="utf-8")
+    day = start_local.day
+    (outdir / f"{day:02d}.md").write_text(
+        "\n".join(lines),
+        encoding="utf-8",
+    )
