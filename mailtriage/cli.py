@@ -12,7 +12,7 @@ from mailtriage.core.db import Database
 from mailtriage.core.schema import ensure_schema_v1, verify_schema_hash
 from mailtriage.core.timewindow import compute_windows
 from mailtriage.ingest.ingest import ingest_account
-from mailtriage.render.daily import render_day
+from mailtriage.render.window import render_window
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     args = Args(config=ns.config, days=ns.days, date=ns.date)
 
     cfg = load_config(args.config)
+    rootdir = args.config.parent / "out"
 
     db_path = cfg.state_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,13 +93,12 @@ def main(argv: list[str] | None = None) -> int:
             local_date = start_dt.astimezone(ZoneInfo(cfg.time.timezone)).date()
 
             for w in windows:
-                render_day(
+                render_window(
                     db=db,
-                    day=local_date,
-                    rootdir=cfg.rootdir,
+                    window_start_utc=start_dt,
+                    window_end_utc=end_dt,
+                    rootdir=rootdir,
                     rules=cfg.rules,
-                    timezone=cfg.time.timezone,
-                    explain=False,
                 )
 
     return 0

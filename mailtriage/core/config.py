@@ -12,6 +12,11 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class OutputConfig:
+    root: Path
+
+
+@dataclass(frozen=True)
 class TimeConfig:
     timezone: str
     workday_start: str  # HH:MM
@@ -105,10 +110,19 @@ def load_config(path: Path) -> AppConfig:
         raise ConfigError("Config must be a YAML mapping at top-level")
 
     _reject_unknown(
-        raw, {"rootdir", "time", "accounts", "rules", "tickets"}, "root config"
+        raw, {"output", "time", "accounts", "rules", "tickets"}, "root config"
     )
 
-    rootdir = Path(_require(raw, "rootdir")).expanduser()
+    output_raw = raw.get("output")
+    _reject_unknown(output_raw, {"root"}, "output")
+    if not output_raw or "root" not in output_raw:
+        raise ConfigError("output.root is required and must be an absolute path")
+
+    root = Path(output_raw["root"])
+    if not root.is_absolute():
+        raise ConfigError("output.root must be an absolute path")
+
+    # rootdir = Path(_require(raw, "rootdir")).expanduser()
     time_raw = _require(raw, "time")
     accounts_raw = _require(raw, "accounts")
     rules_raw = _require(raw, "rules")
@@ -192,6 +206,9 @@ def load_config(path: Path) -> AppConfig:
 
     suppress_raw = rules_raw.get("suppress", {}) or {}
     arrival_raw = rules_raw.get("arrival_only", {}) or {}
+    _reject_unknown(suppress_raw, {"senders", "subjects"}, "rules.suppress")
+    _reject_unknown(arrival_raw, {"senders", "subjects"}, "rules.arrival_only")
+
     hp = rules_raw.get("high_priority_senders") or []
     if not isinstance(hp, list) or not all(isinstance(x, str) for x in hp):
         raise ConfigError("rules.high_priority_senders must be a list of strings")
@@ -199,12 +216,12 @@ def load_config(path: Path) -> AppConfig:
         high_priority_senders=[str(x) for x in hp],
         collapse_automated=bool(rules_raw.get("collapse_automated", True)),
         suppress=SuppressRules(
-            senders=suppress_raw.get("senders", []),
-            subjects=suppress_raw.get("subjects", []),
+            senders=[str(x) for x in suppress_raw.get("senders", [])],
+            subjects=[str(x) for x in suppress_raw.get("subjects", [])],
         ),
         arrival_only=ArrivalOnlyRules(
-            senders=arrival_raw.get("senders", []),
-            subjects=arrival_raw.get("subjects", []),
+            senders=[str(x) for x in arrival_raw.get("senders", [])],
+            subjects=[str(x) for x in arrival_raw.get("subjects", [])],
         ),
     )
 
@@ -220,7 +237,7 @@ def load_config(path: Path) -> AppConfig:
     )
 
     return AppConfig(
-        rootdir=rootdir,
+        rootdir=root,
         time=time_cfg,
         accounts=accounts,
         rules=rules_cfg,
