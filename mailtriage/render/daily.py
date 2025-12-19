@@ -315,7 +315,7 @@ def render_day(
             }
         )
 
-    for msg in buckets["arrival_only"]:
+    for msg in arrival_only_msgs:
         json_out["arrival_only"].append(
             {
                 "from": msg["sender"],
