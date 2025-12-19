@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 @dataclass(frozen=True)
 class Window:
-    label_date: str  # YYYY-MM-DD in local calendar
+    label_date: str  # YYYY-MM-DD (local workday label)
     start_utc: str  # ISO Z
     end_utc: str  # ISO Z
 
@@ -22,6 +22,7 @@ def compute_windows(
     tz = ZoneInfo(timezone)
     hh, mm = _parse_hhmm(workday_start)
 
+    # Explicit date always wins
     if date is not None:
         local_day = datetime.strptime(date, "%Y-%m-%d").date()
         return [_window_for_day(local_day, tz, hh, mm)]
@@ -30,10 +31,20 @@ def compute_windows(
     if n <= 0:
         raise ValueError("--days must be >= 1")
 
-    today_local = datetime.now(tz).date()
-    days_list = [today_local - timedelta(days=i) for i in range(n)]
-    # oldest -> newest for deterministic processing
-    days_list.reverse()
+    now = datetime.now(tz)
+
+    # Determine the current workday label
+    today = now.date()
+    today_start = datetime.combine(today, time(hh, mm), tzinfo=tz)
+
+    if now < today_start:
+        # We are still in yesterday's workday window
+        current_day = today - timedelta(days=1)
+    else:
+        current_day = today
+
+    days_list = [current_day - timedelta(days=i) for i in range(n)]
+    days_list.reverse()  # oldest → newest
 
     return [_window_for_day(d, tz, hh, mm) for d in days_list]
 
