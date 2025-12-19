@@ -97,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:
                     day=local_date,
                     rootdir=cfg.rootdir,
                     rules=cfg.rules,
-                    explain=False,  # we’ll wire the flag next
+                    timezone=cfg.time.timezone,
+                    explain=False,
                 )
 
     return 0

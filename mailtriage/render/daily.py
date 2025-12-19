@@ -25,8 +25,7 @@ def _query_all(db, sql: str, params: tuple = ()) -> list[dict]:
 
 def _fmt_time(iso_utc: str, tz_name: str) -> str:
     dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
-    tz = ZoneInfo(tz_name)
-    return dt.astimezone(tz).strftime("%H:%M")
+    return dt.astimezone(ZoneInfo(tz_name)).strftime("%H:%M")
 
 
 def _match_any(patterns: list[str], value: str) -> bool:
@@ -140,6 +139,7 @@ def render_day(
     day: date,
     rootdir: Path,
     rules,
+    timezone: str,
     explain: bool = False,
 ) -> None:
     messages = load_messages_for_day(db, day)
@@ -266,7 +266,7 @@ def render_day(
     json_path.write_text(json.dumps(json_out, indent=2), encoding="utf-8")
 
     md_path.write_text(
-        render_markdown(json_out, explain, tz_name=rules.timezone), encoding="utf-8"
+        render_markdown(json_out, explain, tz_name=timezone), encoding="utf-8"
     )
 
 
