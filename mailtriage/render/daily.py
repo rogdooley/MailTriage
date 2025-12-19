@@ -49,18 +49,22 @@ def classify_message(msg: dict[str, Any], rules) -> str:
     sender = msg["sender"].lower()
     subject = msg["subject"].lower()
 
-    if _match_any(rules.suppress.senders, sender) or _match_any(
-        rules.suppress.subjects, subject
+    # suppress rules
+    if any(pat.lower() in sender for pat in rules.suppress.senders) or any(
+        pat.lower() in subject for pat in rules.suppress.subjects
     ):
         return "suppress"
 
-    if _match_any(rules.arrival_only.senders, sender) or _match_any(
-        rules.arrival_only.subjects, subject
+    # arrival-only rules
+    if any(pat.lower() in sender for pat in rules.arrival_only.senders) or any(
+        pat.lower() in subject for pat in rules.arrival_only.subjects
     ):
         return "arrival_only"
 
-    if sender in {s.lower() for s in rules.high_priority_senders}:
-        return "high_priority"
+    # HIGH PRIORITY: substring match against sender
+    for hp in rules.high_priority_senders:
+        if hp.lower() in sender:
+            return "high_priority"
 
     return "normal"
 
