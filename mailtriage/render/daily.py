@@ -189,7 +189,7 @@ def render_high_priority(
 
         msgs = block["messages"]
 
-        lines.append(f"### {sender_label}")
+        lines.append(f"## {sender_label}")
         lines.append(f"_Messages today: {len(msgs)}_")
         lines.append("")
 
@@ -235,30 +235,30 @@ def render_day(
     messages = load_messages_for_day(db, day)
     threads = load_threads_for_messages(db, messages)
 
-    buckets = {
-        "high_priority": [],
-        "normal": [],
-        "arrival_only": [],
-    }
-
     explain_map: dict[str, str] = {}
 
+    high_priority_msgs: list[dict] = []
+    arrival_only_msgs: list[dict] = []
+    normal_msgs: list[dict] = []
+
     for msg in messages:
-        classification = classify_message(msg, rules)
+        cls = classify_message(msg, rules)
 
-        if explain:
-            explain_map[msg["message_id"]] = classification
-
-        if classification == "suppress":
+        if cls == "suppress":
             continue
-
-        buckets[classification].append(msg)
+        elif cls == "high_priority":
+            high_priority_msgs.append(msg)
+        elif cls == "arrival_only":
+            arrival_only_msgs.append(msg)
+        else:
+            normal_msgs.append(msg)
 
     # ---- Thread grouping (normal only) ----
 
-    threads_grouped: dict[str, list[dict]] = defaultdict(list)
-    for msg in buckets["normal"]:
-        threads_grouped[msg["thread_id"]].append(msg)
+    threads_grouped = defaultdict(list)
+    for msg in normal_msgs:
+        if msg["thread_id"]:
+            threads_grouped[msg["thread_id"]].append(msg)
 
     actionable_threads = {}
     for tid, msgs in threads_grouped.items():
@@ -277,7 +277,10 @@ def render_day(
 
     # ---- High-priority groups (correct count) ----
 
-    hp_groups = build_high_priority_groups(messages, rules)
+    hp_groups = build_high_priority_groups(
+        messages=high_priority_msgs,
+        rules=rules,
+    )
 
     json_out: dict[str, Any] = {
         "date": day.isoformat(),
