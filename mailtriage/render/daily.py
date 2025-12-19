@@ -255,10 +255,21 @@ def render_day(
 
     # ---- Thread grouping (normal only) ----
 
+    high_priority_thread_ids: set[str] = {
+        msg["thread_id"] for msg in high_priority_msgs if msg.get("thread_id")
+    }
+
     threads_grouped = defaultdict(list)
     for msg in normal_msgs:
-        if msg["thread_id"]:
-            threads_grouped[msg["thread_id"]].append(msg)
+        tid = msg.get("thread_id")
+        if not tid:
+            continue
+
+        # HARD EXCLUSION: threads with any high-priority sender
+        if tid in high_priority_thread_ids:
+            continue
+
+        threads_grouped[tid].append(msg)
 
     actionable_threads = {}
     for tid, msgs in threads_grouped.items():
