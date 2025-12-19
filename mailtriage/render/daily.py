@@ -42,28 +42,25 @@ def format_sender(display: str | None, email: str) -> str:
 
 
 def classify_message(msg: dict[str, Any], rules) -> str:
-    """
-    Returns one of:
-      suppress | arrival_only | high_priority | normal
-    """
-    sender = msg["sender"].lower()
-    subject = msg["subject"].lower()
+    sender = (msg.get("sender") or "").lower()
+    subject = (msg.get("subject") or "").lower()
 
-    # suppress rules
-    if any(pat.lower() in sender for pat in rules.suppress.senders) or any(
-        pat.lower() in subject for pat in rules.suppress.subjects
-    ):
-        return "suppress"
+    for pat in rules.suppress.senders:
+        if pat.lower() in sender:
+            return "suppress"
+    for pat in rules.suppress.subjects:
+        if pat.lower() in subject:
+            return "suppress"
 
-    # arrival-only rules
-    if any(pat.lower() in sender for pat in rules.arrival_only.senders) or any(
-        pat.lower() in subject for pat in rules.arrival_only.subjects
-    ):
-        return "arrival_only"
+    for pat in rules.arrival_only.senders:
+        if pat.lower() in sender:
+            return "arrival_only"
+    for pat in rules.arrival_only.subjects:
+        if pat.lower() in subject:
+            return "arrival_only"
 
-    # HIGH PRIORITY: substring match against sender
     for hp in rules.high_priority_senders:
-        if hp.lower() in sender:
+        if hp.lower() == sender:
             return "high_priority"
 
     return "normal"
