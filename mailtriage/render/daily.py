@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from datetime import date, datetime
-from email.header import decode_header
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -36,6 +35,12 @@ def _match_any(patterns: list[str], value: str) -> bool:
     return False
 
 
+def format_sender(display: str | None, email: str) -> str:
+    if display:
+        return f"{display} <{email}>"
+    return f"<{email}>"
+
+
 def classify_message(msg: dict[str, Any], rules) -> str:
     """
     Returns one of:
@@ -60,30 +65,60 @@ def classify_message(msg: dict[str, Any], rules) -> str:
     return "normal"
 
 
-def decode_and_normalize_subject(value: Any) -> str:
-    if not value:
-        return ""
+def suppress_replied_inbound(messages: list[dict], me_addrs: set[str]) -> list[dict]:
+    last_inbound: datetime | None = None
+    last_outbound: datetime | None = None
 
-    # Ensure string
-    if not isinstance(value, str):
-        value = str(value)
-
-    parts: list[str] = []
-    for part, charset in decode_header(value):
-        if isinstance(part, bytes):
-            try:
-                parts.append(part.decode(charset or "utf-8", errors="replace"))
-            except Exception:
-                parts.append(part.decode("utf-8", errors="replace"))
+    for m in messages:
+        ts = datetime.fromisoformat(m["date_utc"].replace("Z", "+00:00"))
+        if m.get("is_outbound"):
+            last_outbound = max(last_outbound or ts, ts)
         else:
-            parts.append(part)
+            last_inbound = max(last_inbound or ts, ts)
 
-    subject = "".join(parts)
+    if last_outbound and last_inbound and last_outbound >= last_inbound:
+        return []
 
-    # Normalize whitespace
-    subject = " ".join(subject.split())
+    return messages
 
-    return subject.strip()
+
+def build_high_priority_groups(
+    messages: list[dict],
+    rules,
+) -> dict[str, dict]:
+    """
+    Group high-priority inbound messages by sender.
+    Suppress groups where the last inbound has already been replied to.
+    """
+    me_addrs = {a.lower() for a in getattr(rules, "me_addresses", [])}
+    hp_senders = {s.lower() for s in rules.high_priority_senders}
+
+    grouped: dict[str, list[dict]] = defaultdict(list)
+
+    for msg in messages:
+        sender = msg["sender"].lower()
+        if sender in hp_senders:
+            grouped[sender].append(msg)
+
+    result: dict[str, dict] = {}
+
+    for sender, msgs in grouped.items():
+        msgs = sorted(
+            msgs,
+            key=lambda m: datetime.fromisoformat(m["date_utc"].replace("Z", "+00:00")),
+        )
+
+        msgs = suppress_replied_inbound(msgs, me_addrs)
+        if not msgs:
+            continue
+
+        result[sender] = {
+            "sender_email": sender,
+            "sender_display": msgs[0].get("sender_display"),
+            "messages": msgs,
+        }
+
+    return dict(sorted(result.items()))
 
 
 # ----------------------------
@@ -133,6 +168,61 @@ def load_threads_for_messages(db, messages: list[dict[str, Any]]) -> dict[str, d
 # ----------------------------
 
 
+def render_high_priority(
+    groups: dict[str, dict],
+    tz_name: str,
+) -> list[str]:
+    tz = ZoneInfo(tz_name)
+    lines: list[str] = []
+
+    if not groups:
+        return lines
+
+    lines.append("## High Priority")
+    lines.append("")
+
+    for sender_email, block in groups.items():
+        sender_label = format_sender(
+            block.get("sender_display"),
+            sender_email,
+        )
+
+        msgs = block["messages"]
+
+        lines.append(f"### {sender_label}")
+        lines.append(f"_Messages today: {len(msgs)}_")
+        lines.append("")
+
+        for m in msgs:
+            dt = datetime.fromisoformat(m["date_utc"].replace("Z", "+00:00"))
+            local_time = dt.astimezone(tz).strftime("%H:%M")
+
+            to_addrs = json.loads(m.get("to_addrs") or "[]")
+            cc_addrs = json.loads(m.get("cc_addrs") or "[]")
+
+            header_bits = []
+            if to_addrs:
+                header_bits.append(f"To: {', '.join(to_addrs)}")
+            if cc_addrs:
+                header_bits.append(f"CC: {', '.join(cc_addrs)}")
+            header_bits.append(local_time)
+
+            lines.append(f"**{m['subject'] or '(no subject)'}**")
+            lines.append(f"_{' • '.join(header_bits)}_")
+
+            excerpt = normalize_excerpt(m["extracted_new_text"])
+            if excerpt:
+                for ln in excerpt.splitlines():
+                    lines.append(f"- {ln}")
+
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+    return lines
+
+
 def render_day(
     *,
     db,
@@ -143,11 +233,9 @@ def render_day(
     explain: bool = False,
 ) -> None:
     messages = load_messages_for_day(db, day)
-    for msg in messages:
-        msg["subject"] = decode_and_normalize_subject(msg.get("subject") or "")
     threads = load_threads_for_messages(db, messages)
 
-    buckets: dict[str, list[dict[str, Any]]] = {
+    buckets = {
         "high_priority": [],
         "normal": [],
         "arrival_only": [],
@@ -166,15 +254,12 @@ def render_day(
 
         buckets[classification].append(msg)
 
-    # ----------------------------
-    # Thread grouping for normal messages
-    # ----------------------------
+    # ---- Thread grouping (normal only) ----
 
-    threads_grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    threads_grouped: dict[str, list[dict]] = defaultdict(list)
     for msg in buckets["normal"]:
         threads_grouped[msg["thread_id"]].append(msg)
 
-    # Suppress threads already replied to
     actionable_threads = {}
     for tid, msgs in threads_grouped.items():
         t = threads.get(tid)
@@ -186,44 +271,27 @@ def render_day(
         last_out = t.get("last_outbound_at_utc")
 
         if last_out and last_in and last_out >= last_in:
-            continue  # already replied
+            continue
 
         actionable_threads[tid] = msgs
 
-    # ----------------------------
-    # Build JSON
-    # ----------------------------
+    # ---- High-priority groups (correct count) ----
+
+    hp_groups = build_high_priority_groups(messages, rules)
 
     json_out: dict[str, Any] = {
         "date": day.isoformat(),
         "summary": {
             "total_messages": len(messages),
-            "actionable_messages": (
-                len(buckets["high_priority"])
-                + sum(len(v) for v in actionable_threads.values())
-            ),
+            "actionable_messages": len(hp_groups) + len(actionable_threads),
             "threads": len(actionable_threads),
         },
-        "high_priority": [],
         "threads": [],
         "arrival_only": [],
     }
 
     if explain:
         json_out["explain"] = explain_map
-
-    for msg in buckets["high_priority"]:
-        json_out["high_priority"].append(
-            {
-                "message_id": msg["message_id"],
-                "from": msg["sender"],
-                "subject": msg["subject"],
-                "excerpt": msg["extracted_new_text"],
-                "timestamp_utc": msg["date_utc"],
-                "has_attachments": bool(msg["has_attachments"]),
-                "attachments": json.loads(msg["attachment_names"] or "[]"),
-            }
-        )
 
     for tid, msgs in actionable_threads.items():
         t = threads.get(tid, {})
@@ -253,20 +321,22 @@ def render_day(
             }
         )
 
-    # ----------------------------
-    # Write files
-    # ----------------------------
-
     outdir = rootdir / f"{day.year:04d}" / f"{day.month:02d}"
     outdir.mkdir(parents=True, exist_ok=True)
 
-    json_path = outdir / f"{day.day:02d}.json"
-    md_path = outdir / f"{day.day:02d}.md"
+    (outdir / f"{day.day:02d}.json").write_text(
+        json.dumps(json_out, indent=2), encoding="utf-8"
+    )
 
-    json_path.write_text(json.dumps(json_out, indent=2), encoding="utf-8")
-
-    md_path.write_text(
-        render_markdown(json_out, explain, tz_name=timezone), encoding="utf-8"
+    (outdir / f"{day.day:02d}.md").write_text(
+        render_markdown(
+            json_out,
+            explain,
+            tz_name=timezone,
+            rules=rules,
+            all_messages=messages,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -307,44 +377,42 @@ def normalize_excerpt(s: str) -> str:
     return "\n".join(lines_out)
 
 
-def render_markdown(data: dict[str, Any], explain: bool, *, tz_name: str) -> str:
+def render_markdown(
+    data: dict[str, Any],
+    explain: bool,
+    *,
+    tz_name: str,
+    rules,
+    all_messages: list[dict],
+) -> str:
     lines: list[str] = []
 
     lines.append(f"# MailTriage — {data['date']}")
-    lines.append("_Timezone: America/New_York_")
+    lines.append(f"_Timezone: {tz_name}_")
     lines.append("")
     lines.append("---")
     lines.append("")
 
-    # High Priority
-    if data["high_priority"]:
-        lines.append("## High Priority")
-        lines.append("")
-        for m in data["high_priority"]:
-            lines.append(f"### {m['from']}")
-            lines.append(f"**{m['subject']}**")
-            lines.append("")
-            excerpt = normalize_excerpt(m["excerpt"])
-            if excerpt:
-                for ln in excerpt.splitlines():
-                    lines.append(f"  - {ln}")
-            if m["has_attachments"]:
-                lines.append(f"- Attachments: {', '.join(m['attachments'])}")
-            lines.append(f"- Time: {_fmt_time(m['timestamp_utc'], tz_name)}")
-            lines.append("")
-        lines.append("---")
-        lines.append("")
+    # ---- High Priority ----
 
-    # Threads
+    hp_groups = build_high_priority_groups(all_messages, rules)
+    lines.extend(render_high_priority(hp_groups, tz_name))
+
+    # ---- Other Threads ----
+
     if data["threads"]:
         lines.append("## Other Messages")
         lines.append("")
+
         for t in data["threads"]:
             subject = t["messages"][0].get("subject") or "(no subject)"
             lines.append(f"### {subject}")
+
             if t["participants"]:
                 lines.append(f"Participants: {', '.join(t['participants'])}")
+
             lines.append("")
+
             for m in t["messages"]:
                 lines.append(
                     f"- **{_fmt_time(m['timestamp_utc'], tz_name)} — {m['from']}**"
@@ -353,11 +421,13 @@ def render_markdown(data: dict[str, Any], explain: bool, *, tz_name: str) -> str
                 if excerpt:
                     for ln in excerpt.splitlines():
                         lines.append(f"  - {ln}")
+
             lines.append("")
         lines.append("---")
         lines.append("")
 
-    # Arrival only
+    # ---- Arrival Only ----
+
     if data["arrival_only"]:
         lines.append("## Arrivals (No Action Needed)")
         lines.append("")
@@ -367,7 +437,8 @@ def render_markdown(data: dict[str, Any], explain: bool, *, tz_name: str) -> str
         lines.append("---")
         lines.append("")
 
-    # Summary
+    # ---- Summary ----
+
     s = data["summary"]
     lines.append("## Summary")
     lines.append("")
