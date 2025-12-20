@@ -22,7 +22,9 @@ def compute_windows(
     tz = ZoneInfo(timezone)
     hh, mm = _parse_hhmm(workday_start)
 
-    # Explicit date always wins
+    now_local = datetime.now(tz)
+
+    # Explicit date override (used rarely, but deterministic)
     if date is not None:
         local_day = datetime.strptime(date, "%Y-%m-%d").date()
         return [_window_for_day(local_day, tz, hh, mm)]
@@ -31,19 +33,17 @@ def compute_windows(
     if n <= 0:
         raise ValueError("--days must be >= 1")
 
-    now = datetime.now(tz)
-
-    # Determine the current workday label
-    today = now.date()
+    # Anchor to the most recent workday boundary ≤ now
+    today = now_local.date()
     today_start = datetime.combine(today, time(hh, mm), tzinfo=tz)
 
-    if now < today_start:
-        # We are still in yesterday's workday window
-        current_day = today - timedelta(days=1)
+    if now_local >= today_start:
+        last_completed_day = today
     else:
-        current_day = today
+        last_completed_day = today - timedelta(days=1)
 
-    days_list = [current_day - timedelta(days=i) for i in range(n)]
+    days_list = [last_completed_day - timedelta(days=i) for i in range(n)]
+
     days_list.reverse()  # oldest → newest
 
     return [_window_for_day(d, tz, hh, mm) for d in days_list]
