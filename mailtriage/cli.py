@@ -89,23 +89,21 @@ def main(argv: list[str] | None = None) -> int:
             db.record_run_window(w.start_utc, w.end_utc)
 
         for w in windows:
-            start_utc = _parse_utc_z(w.start_utc)
-            end_utc = _parse_utc_z(w.end_utc)
+            start_dt = _parse_utc_z(w.start_utc)
+            end_dt = _parse_utc_z(w.end_utc)
 
-            # ingest per account
             for acct in cfg.accounts:
                 ingest_account(
                     db=db,
                     account_cfg=acct,
-                    window_start_utc=start_utc,
-                    window_end_utc=end_utc,
+                    window_start_utc=start_dt,
+                    window_end_utc=end_dt,
                 )
 
-            # render exactly once per window
             render_window(
                 db=db,
-                window_start_utc=start_utc,
-                window_end_utc=end_utc,
+                window_start_utc=start_dt,
+                window_end_utc=end_dt,
                 rootdir=rootdir,
                 rules=cfg.rules,
                 timezone=cfg.time.timezone,

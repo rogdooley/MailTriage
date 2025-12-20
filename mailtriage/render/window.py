@@ -4,7 +4,6 @@ from collections import defaultdict
 from datetime import datetime
 from email.utils import getaddresses
 from pathlib import Path
-from typing import Any
 from zoneinfo import ZoneInfo
 
 # ----------------------------------------------------------------------
@@ -20,10 +19,10 @@ def _query_all(db, sql: str, params: tuple = ()) -> list[dict]:
 def load_messages_for_window(
     db,
     *,
-    start_utc: datetime,
-    end_utc: datetime,
-) -> list[dict[str, Any]]:
-    return _query_all(
+    window_start_utc: datetime,
+    window_end_utc: datetime,
+) -> list[dict]:
+    rows = _query_all(
         db,
         """
         SELECT *
@@ -33,10 +32,11 @@ def load_messages_for_window(
         ORDER BY date_utc ASC
         """,
         (
-            start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            window_start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            window_end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         ),
     )
+    return rows
 
 
 def load_threads(db, messages: list[dict]) -> dict[str, dict]:
@@ -184,8 +184,8 @@ def render_window(
 
     messages = load_messages_for_window(
         db,
-        start_utc=window_start_utc,
-        end_utc=window_end_utc,
+        window_start_utc=window_start_utc,
+        window_end_utc=window_end_utc,
     )
     threads = load_threads(db, messages)
 
