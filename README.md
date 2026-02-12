@@ -184,8 +184,6 @@ Use the redacted sample to create a local policy:
 cp daily.policy.example.yml daily.policy.yml
 ```
 
-See `/Users/dooley/Documents/GithubClone/MailTriage/docs/daily-runner.md` for launchd setup and policy options.
-
 ---
 
 ## Design Constraints
