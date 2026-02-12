@@ -5,7 +5,10 @@ import imaplib
 import json
 import os
 import re
+import signal
+import socket
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import message_from_bytes
@@ -45,18 +48,61 @@ class BitwardenSecretProvider(SecretProvider):
     def __init__(self, bw_bin: str = "bw") -> None:
         self._bw_bin = bw_bin
 
+    def _debug(self, msg: str) -> None:
+        if os.environ.get("MAILTRIAGE_DEBUG"):
+            sys.stderr.write(f"[mailtriage][bitwarden] {msg}\n")
+
     def resolve(self, reference: str) -> ResolvedSecrets:
         try:
+            # Avoid hanging on interactive prompts. If `BW_SESSION` is present,
+            # do NOT use `bw status` as a gate: some installations report
+            # "locked" even when a valid session token is set.
+            has_session = bool(os.environ.get("BW_SESSION"))
+            self._debug("BW_SESSION present: " + ("yes" if has_session else "no"))
+
+            if not has_session:
+                status = subprocess.run(
+                    [self._bw_bin, "status"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                try:
+                    st = json.loads(status.stdout)
+                    s = str(st.get("status", "")).lower()
+                    self._debug(f"bw status: {s!r}")
+                    if s in {"locked", "unauthenticated"}:
+                        raise SecretProviderError(
+                            f"Bitwarden status is '{s}'. Unlock/login Bitwarden before running."
+                        )
+                except json.JSONDecodeError:
+                    # Older bw versions may not return JSON; proceed and rely on timeout/error.
+                    pass
+
+            self._debug(f"Fetching item {reference!r}")
             proc = subprocess.run(
                 [self._bw_bin, "get", "item", reference],
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=20,
             )
         except FileNotFoundError as e:
             raise SecretProviderError("Bitwarden CLI not found") from e
+        except subprocess.TimeoutExpired as e:
+            raise SecretProviderError(
+                "Bitwarden CLI timed out (is it waiting for unlock/login?)"
+            ) from e
         except subprocess.CalledProcessError as e:
-            raise SecretProviderError(e.stderr or "Bitwarden error") from e
+            err = (e.stderr or e.stdout or "Bitwarden error").strip()
+            low = err.lower()
+            if "locked" in low or "unlock" in low or "session" in low:
+                raise SecretProviderError(
+                    "Bitwarden vault is locked or session is missing/invalid. "
+                    "Run `bw unlock --raw` and set BW_SESSION (or refresh the saved session file)."
+                ) from e
+            raise SecretProviderError(err) from e
 
         item = json.loads(proc.stdout)
         login = item.get("login", {})
@@ -131,12 +177,47 @@ class FetchedMessage:
 _INTERNALDATE_RE = re.compile(r'INTERNALDATE "([^"]+)"')
 
 
+def _debug(msg: str) -> None:
+    if os.environ.get("MAILTRIAGE_DEBUG"):
+        sys.stderr.write(f"[mailtriage] {msg}\n")
+
+
+def _call_with_alarm(seconds: int, fn, *args, **kwargs):
+    # Use a hard timeout so network/DNS/login issues don't hang forever.
+    if seconds <= 0:
+        return fn(*args, **kwargs)
+
+    def _handler(_signum, _frame):
+        raise TimeoutError(f"Timed out after {seconds}s")
+
+    old = signal.signal(signal.SIGALRM, _handler)
+    try:
+        signal.alarm(seconds)
+        return fn(*args, **kwargs)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
 def _connect_imap(acct: ImapAccount) -> imaplib.IMAP4_SSL:
     if not acct.ssl:
         raise RuntimeError("SSL required")
-    conn = imaplib.IMAP4_SSL(acct.host, acct.port)
-    conn.login(acct.username, acct.password)
-    return conn
+
+    def _connect_and_login() -> imaplib.IMAP4_SSL:
+        # Best-effort socket timeout; the alarm above is the real safety net.
+        prev = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(20)
+        try:
+            _debug(f"IMAP connect {acct.host}:{acct.port}")
+            conn = imaplib.IMAP4_SSL(acct.host, acct.port)
+            _debug("IMAP login")
+            conn.login(acct.username, acct.password)
+            _debug("IMAP login OK")
+            return conn
+        finally:
+            socket.setdefaulttimeout(prev)
+
+    return _call_with_alarm(45, _connect_and_login)
 
 
 def _select_readonly(conn: imaplib.IMAP4_SSL, folder: str) -> None:
@@ -265,6 +346,23 @@ def extract_sender(msg: Message) -> tuple[str, str | None]:
 # DB writes
 # ---------------------------------------------------------------------------
 
+def ensure_account(
+    db: Database,
+    *,
+    account_id: str,
+    primary_address: str,
+    aliases: list[str],
+) -> None:
+    # Idempotent: required to satisfy messages.account_id foreign key.
+    db.exec(
+        """
+        INSERT OR IGNORE INTO accounts (
+            id, primary_address, aliases, created_at_utc
+        ) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        """,
+        (account_id, primary_address, json.dumps(aliases)),
+    )
+
 
 def insert_message(
     db: Database,
@@ -274,7 +372,6 @@ def insert_message(
     folder: str,
     date_utc: datetime,
     sender: str,
-    sender_display: str | None,
     to_addrs: list[str],
     cc_addrs: list[str],
     subject: str,
@@ -289,13 +386,13 @@ def insert_message(
         """
         INSERT OR IGNORE INTO messages (
             message_id, account_id, folder, date_utc,
-            sender, sender_display,
+            sender,
             recipients_to, recipients_cc,
             subject, inbound, outbound,
             extracted_new_text,
             has_attachments, attachment_names,
             thread_id, created_at_utc
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         """,
         (
             message_id,
@@ -303,7 +400,6 @@ def insert_message(
             folder,
             date_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             sender,
-            sender_display,
             json.dumps(to_addrs),
             json.dumps(cc_addrs),
             subject,
@@ -329,6 +425,13 @@ def ingest_account(
     window_start_utc: datetime,
     window_end_utc: datetime,
 ) -> None:
+    ensure_account(
+        db,
+        account_id=account_cfg.id,
+        primary_address=account_cfg.identity.primary_address.lower(),
+        aliases=[a.lower() for a in account_cfg.identity.aliases],
+    )
+
     acct = build_imap_account(account_cfg=account_cfg)
     conn: imaplib.IMAP4_SSL | None = None
 
@@ -348,7 +451,7 @@ def ingest_account(
                 if not (window_start_utc <= ts < window_end_utc):
                     continue
 
-                sender, sender_display = extract_sender(msg)
+                sender, _sender_display = extract_sender(msg)
                 subject = decode_mime_header(msg.get("Subject"))
 
                 to_addrs = [
@@ -377,7 +480,6 @@ def ingest_account(
                     folder=folder,
                     date_utc=ts,
                     sender=sender,
-                    sender_display=sender_display,
                     to_addrs=to_addrs,
                     cc_addrs=cc_addrs,
                     subject=subject,

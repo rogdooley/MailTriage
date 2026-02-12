@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import socket
 import subprocess
 import sys
+import webbrowser
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,8 @@ import yaml
 
 from mailtriage.cli import main as mailtriage_main
 from mailtriage.core.config import load_config
+from mailtriage.core.notify import notify, open_file_in_browser, show_command_page
+from mailtriage.ingest.ingest import SecretProviderError
 
 
 def _parse_hhmm(value: str) -> tuple[int, int]:
@@ -121,19 +125,50 @@ def _country_holidays(country: str, subdiv: str | None, years: list[int]) -> set
     return set(items.keys())
 
 
-def _notify(title: str, message: str) -> None:
-    script = (
-        'display notification "'
-        + message.replace('"', "'")
-        + '" with title "'
-        + title.replace('"', "'")
-        + '"'
-    )
-    subprocess.run(["osascript", "-e", script], check=False)
-
-
 def _open_path(path: Path) -> None:
-    subprocess.run(["open", str(path)], check=False)
+    # OS-agnostic: ask default browser to open the file:// URI.
+    open_file_in_browser(path)
+
+
+def _dialog(title: str, message: str) -> None:
+    # Cross-platform dialog isn't reliable without deps; use a notification instead.
+    notify(title, message)
+
+
+def _open_app(app_name: str) -> None:
+    # Best-effort: on macOS, open app by name; elsewhere, no-op.
+    if sys.platform == "darwin":
+        subprocess.run(["open", "-a", app_name], check=False)
+
+
+def _resolve_under_root(p: str | None, root: Path) -> Path | None:
+    if not p:
+        return None
+    path = Path(str(p))
+    if path.is_absolute():
+        return path
+    return root / path
+
+
+def _load_bitwarden_session(policy: dict[str, Any], rootdir: Path) -> Path | None:
+    """
+    If configured and present, load a Bitwarden CLI session token into BW_SESSION.
+    This allows background runs to fetch secrets without requiring a per-shell export.
+    """
+    bw_cfg = policy.get("bitwarden") if isinstance(policy.get("bitwarden"), dict) else {}
+    # If the user didn't configure a session file, default to output-root local state,
+    # matching the CLI behavior.
+    session_file = _resolve_under_root(
+        bw_cfg.get("session_file") or (rootdir / ".mailtriage" / "bw_session"),
+        rootdir,
+    )
+    try:
+        token = session_file.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return session_file
+    if token:
+        os.environ.setdefault("BW_SESSION", token)
+    return session_file
 
 
 def _on_vpn(host: str | None) -> bool:
@@ -212,9 +247,16 @@ def main(argv: list[str] | None = None) -> int:
     dotenv_file = _resolve_path(policy.get("env_file", ".env"), repo_root)
     dotenv_vars = _read_dotenv(dotenv_file) if dotenv_file else {}
     merged_env = {**dotenv_vars, **os.environ}
+    # Make dotenv vars visible to the current process so other modules that rely on
+    # os.environ (e.g., the HTML viewer limit) see them.
+    for k, v in dotenv_vars.items():
+        os.environ.setdefault(k, v)
 
     tz = ZoneInfo(cfg.time.timezone)
     now_local = datetime.now(tz)
+
+    # Load BW_SESSION from a configured session file (if present).
+    bw_session_file = _load_bitwarden_session(policy, cfg.rootdir)
 
     country = str(policy.get("country", "US"))
     subdiv = policy.get("subdiv")
@@ -262,10 +304,9 @@ def main(argv: list[str] | None = None) -> int:
                 and dl_cfg.get("remind_if_missing", True)
                 and not ns.dry_run
             ):
-                _notify(
-                    "MailTriage",
-                    "Holiday file missing. Connect to VPN and refresh holiday calendar.",
-                )
+                # No notifications by default; rely on logs. If you want reminders, enable them and
+                # install a platform notifier.
+                pass
 
     end_day = now_local.date()
     notify_cfg = policy.get("notification") if isinstance(policy.get("notification"), dict) else {}
@@ -285,24 +326,81 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if ns.force or not report_path.exists():
-        rc = mailtriage_main(["run", "--config", str(ns.config), "--days", "1"])
-        if rc != 0:
-            _notify("MailTriage", "Daily run failed.")
-            return rc
+        try:
+            rc = mailtriage_main(["run", "--config", str(ns.config), "--days", "1"])
+            if rc != 0:
+                return rc
+        except SecretProviderError as e:
+            msg = str(e)
+            notify_cfg = policy.get("notification") if isinstance(policy.get("notification"), dict) else {}
+            bw_cfg = notify_cfg.get("bitwarden_locked") if isinstance(notify_cfg.get("bitwarden_locked"), dict) else {}
+            show_dialog = bool(bw_cfg.get("show_dialog", True))
+            open_app = bool(bw_cfg.get("open_app", True))
+            app_name = str(bw_cfg.get("app_name", "Bitwarden"))
+            show_unlock_command = bool(bw_cfg.get("show_unlock_command", True))
+
+            # Always print a small debug bundle so failures are diagnosable even if notifications are flaky.
+            sys.stderr.write("[mailtriage-daily] secrets provider error: " + msg + "\n")
+            sys.stderr.write(
+                "[mailtriage-daily] BW_SESSION set: "
+                + ("yes" if bool(os.environ.get("BW_SESSION")) else "no")
+                + "\n"
+            )
+            sys.stderr.write(
+                "[mailtriage-daily] BW session file: "
+                + (str(bw_session_file) if bw_session_file else "(none)")
+                + "\n"
+            )
+
+            # Open browser page (no click required). Notifications are best-effort and may be no-op.
+            notify("MailTriage", f"MailTriage needs Bitwarden unlock: {msg}")
+            if open_app:
+                _open_app(app_name)
+
+            if show_unlock_command:
+                # If no session file configured, fall back to a sane default under output.root.
+                p = bw_session_file or (cfg.rootdir / ".mailtriage" / "bw_session")
+                sys.stderr.write("[mailtriage-daily] opening unlock page for: " + str(p) + "\n")
+                cmd = (
+                    f"mkdir -p {shlex.quote(str(p.parent))} && "
+                    f"bw unlock --raw > {shlex.quote(str(p))} && "
+                    f"chmod 600 {shlex.quote(str(p))}"
+                )
+                show_command_page(
+                    "MailTriage Needs Bitwarden",
+                    "Bitwarden CLI is locked, so MailTriage can't fetch IMAP credentials.\n"
+                    "Run this command in a shell to unlock and save a session token for background runs.",
+                    cmd,
+                )
+
+            if show_dialog:
+                _dialog(
+                    "MailTriage Needs Bitwarden",
+                    "Bitwarden CLI is locked, so MailTriage can't fetch IMAP credentials.\n\n"
+                    "Use the unlock command prompt (if enabled) to save a session token.\n"
+                    "Otherwise, in an interactive shell:\n"
+                    "  bw unlock --raw\n"
+                    "and export BW_SESSION.\n\n"
+                    f"Details: {msg}",
+                )
+            return 2
+        except Exception as e:
+            return 2
 
     if report_path.exists():
         if latest_path.exists() or latest_path.is_symlink():
             latest_path.unlink()
         latest_path.symlink_to(report_path)
 
-    notify_enabled = bool(notify_cfg.get("enabled", True))
+    # Minimal friction: no success notifications by default.
+    notify_enabled = bool(notify_cfg.get("enabled", False))
     open_enabled = bool(notify_cfg.get("open_report", False))
 
     if suppress_non_workday and is_non_workday:
         return 0
 
     if report_path.exists() and notify_enabled:
-        _notify("MailTriage", f"Daily report ready: {report_path.name}")
+        notify("MailTriage", f"Daily report ready: {report_path.name}")
 
     if report_path.exists() and open_enabled:
         _open_path(report_path)

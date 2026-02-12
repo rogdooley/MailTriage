@@ -11,6 +11,7 @@
 - Optionally ingests one or more ICS files as additional holidays
 - Suppresses notification/open on weekend and holidays (configurable)
 - Optional Jan 1 holiday-calendar download with VPN gate and reminder when missing
+By default, it runs quietly and only surfaces Bitwarden unlock issues.
 
 ## Policy file
 
@@ -37,6 +38,23 @@ For URL from env, set in `.env`:
 ORG_HOLIDAYS_URL=https://your-internal-url/path/company.ics
 ```
 
+Viewer settings in `.env`:
+
+```bash
+# Show only the most recent N days in the sidebar (0 = show all)
+MAILTRIAGE_VIEW_DAYS=14
+```
+
+If Bitwarden is used for IMAP credentials, the daily runner will notify you when
+Bitwarden is locked. You can also enable a modal dialog and auto-open the app
+via `notification.bitwarden_locked` in your local policy file.
+
+For background runs, the recommended approach is to use a Bitwarden CLI session token:
+
+- Configure `bitwarden.session_file: .mailtriage/bw_session` in your policy
+- When locked, the runner can show a copy/paste command (and copy it to clipboard) to populate that file
+- Future runs load the token from that file into `BW_SESSION`
+
 ## Run manually
 
 ```bash
@@ -51,22 +69,30 @@ uv run mailtriage-daily --config config.yml --policy daily.policy.yml --dry-run
 
 ## launchd setup (macOS)
 
+Generate a plist from your local paths (daily, 7 days/week):
+
+```bash
+uv run mailtriage-launchd --repo . --config config.yml --policy daily.policy.yml --out /tmp/com.mailtriage.daily.plist
+```
+
 1. Copy plist:
 
 ```bash
-cp /Users/dooley/Documents/GithubClone/MailTriage/scripts/com.dooley.mailtriage.daily.plist ~/Library/LaunchAgents/
+cp /tmp/com.mailtriage.daily.plist ~/Library/LaunchAgents/com.mailtriage.daily.plist
 ```
 
 2. Load it:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.dooley.mailtriage.daily.plist 2>/dev/null || true
-launchctl load ~/Library/LaunchAgents/com.dooley.mailtriage.daily.plist
+launchctl unload ~/Library/LaunchAgents/com.mailtriage.daily.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/com.mailtriage.daily.plist
 ```
 
 3. Logs:
 
-- `/tmp/mailtriage-daily.out.log`
-- `/tmp/mailtriage-daily.err.log`
+- `<output.root>/.mailtriage/logs/YYYY-MM-DD.out.log`
+- `<output.root>/.mailtriage/logs/YYYY-MM-DD.err.log`
+
+Logs are pruned automatically after 7 days.
 
 The provided plist runs daily at `09:05` and also at login (`RunAtLoad`), which covers late starts.

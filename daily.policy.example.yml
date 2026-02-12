@@ -2,6 +2,12 @@ country: US
 subdiv:
 env_file: .env
 
+# Bitwarden CLI automation:
+# If you use secrets.provider: bitwarden, store a BW_SESSION token here (created by `bw unlock --raw`).
+# This file lives under output.root and is not part of the repo.
+bitwarden:
+  session_file: .mailtriage/bw_session
+
 # YYYY-MM-DD lines, one per line. These are always treated as holidays.
 manual_holidays_file: holidays/manual_holidays.txt
 
@@ -23,9 +29,18 @@ holiday_download:
   output_file_template: holidays/company.ics
   # Optional host that only resolves on VPN.
   vpn_check_host:
-  remind_if_missing: true
+  remind_if_missing: false
 
 notification:
-  enabled: true
+  enabled: false
   open_report: false
   suppress_on_non_workday: true
+  bitwarden_locked:
+    # Show a modal dialog if secrets can't be fetched because Bitwarden is locked.
+    show_dialog: true
+    # Attempt to open the Bitwarden app to prompt unlock.
+    open_app: true
+    app_name: Bitwarden
+    # Show a window with a copy/paste command (and copy it to clipboard when possible)
+    # to populate bitwarden.session_file.
+    show_unlock_command: true

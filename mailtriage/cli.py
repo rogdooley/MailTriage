@@ -5,13 +5,17 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 
 from mailtriage.core.config import load_config
 from mailtriage.core.db import Database
+from mailtriage.core.notify import notify
 from mailtriage.core.schema import ensure_schema_v1, verify_schema_hash
 from mailtriage.core.timewindow import compute_windows
+from mailtriage.ingest.ingest import SecretProviderError
 from mailtriage.ingest.ingest import ingest_account
 from mailtriage.render.window import render_window
+from mailtriage.render.site import render_index
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,29 @@ def _parse_utc_z(ts: str) -> datetime:
     return datetime.fromisoformat(ts[:-1]).replace(tzinfo=timezone.utc)
 
 
+def _maybe_load_bw_session(*, output_root: Path) -> None:
+    """
+    Best-effort convenience: if Bitwarden CLI is used and a session token was
+    previously saved to disk, load it so `bw get item` can run non-interactively.
+    """
+    if os.environ.get("BW_SESSION"):
+        if os.environ.get("MAILTRIAGE_DEBUG"):
+            sys.stderr.write("[mailtriage] BW_SESSION already set in environment\n")
+        return
+    override = os.environ.get("MAILTRIAGE_BW_SESSION_FILE")
+    session_path = Path(override) if override else (output_root / ".mailtriage" / "bw_session")
+    try:
+        token = session_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        if os.environ.get("MAILTRIAGE_DEBUG"):
+            sys.stderr.write(f"[mailtriage] BW session file not found: {session_path}\n")
+        return
+    if token:
+        if os.environ.get("MAILTRIAGE_DEBUG"):
+            sys.stderr.write(f"[mailtriage] Loaded BW_SESSION from: {session_path}\n")
+        os.environ["BW_SESSION"] = token
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     parser = build_parser()
@@ -64,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # authoritative output root — config only
     rootdir = cfg.rootdir
+    _maybe_load_bw_session(output_root=rootdir)
 
     # state DB location (persistent)
     db_path = cfg.state_db_path()
@@ -88,25 +116,33 @@ def main(argv: list[str] | None = None) -> int:
         for w in windows:
             db.record_run_window(w.start_utc, w.end_utc)
 
-        for w in windows:
-            start_dt = _parse_utc_z(w.start_utc)
-            end_dt = _parse_utc_z(w.end_utc)
+        try:
+            for w in windows:
+                start_dt = _parse_utc_z(w.start_utc)
+                end_dt = _parse_utc_z(w.end_utc)
 
-            for acct in cfg.accounts:
-                ingest_account(
+                for acct in cfg.accounts:
+                    ingest_account(
+                        db=db,
+                        account_cfg=acct,
+                        window_start_utc=start_dt,
+                        window_end_utc=end_dt,
+                    )
+
+                render_window(
                     db=db,
-                    account_cfg=acct,
                     window_start_utc=start_dt,
                     window_end_utc=end_dt,
+                    rootdir=rootdir,
+                    rules=cfg.rules,
+                    timezone=cfg.time.timezone,
                 )
+        except SecretProviderError as e:
+            # Best-effort: show a desktop notification in addition to the error.
+            notify("MailTriage", f"Cannot fetch secrets: {e}")
+            raise
 
-            render_window(
-                db=db,
-                window_start_utc=start_dt,
-                window_end_utc=end_dt,
-                rootdir=rootdir,
-                rules=cfg.rules,
-                timezone=cfg.time.timezone,
-            )
+        # Refresh static viewer page after rendering.
+        render_index(rootdir)
 
     return 0

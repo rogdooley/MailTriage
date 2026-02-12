@@ -3,8 +3,11 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from email.utils import getaddresses
+import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from mailtriage.render.md_to_html import write_report_html
 
 # ----------------------------------------------------------------------
 # DB helpers
@@ -161,6 +164,30 @@ def normalize_excerpt(text: str) -> str:
 def format_sender(display: str | None, email: str) -> str:
     return f"{display} <{email}>" if display else f"<{email}>"
 
+def _parse_json_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x) for x in value if x]
+    if isinstance(value, str):
+        try:
+            data = json.loads(value)
+            if isinstance(data, list):
+                return [str(x) for x in data if x]
+        except Exception:
+            return []
+    return []
+
+
+def _fmt_addrs(addrs: list[str], *, max_items: int = 4) -> str:
+    if not addrs:
+        return ""
+    shown = addrs[:max_items]
+    extra = len(addrs) - len(shown)
+    if extra > 0:
+        return ", ".join(shown) + f" (+{extra})"
+    return ", ".join(shown)
+
 
 # ----------------------------------------------------------------------
 # MAIN ENTRYPOINT
@@ -249,9 +276,9 @@ def render_window(
     lines.append(
         f"# MailTriage — "
         f"{start_local.strftime('%Y-%m-%d %H:%M')} → "
-        f"{end_local.strftime('%H:%M')}"
+        f"{end_local.strftime('%Y-%m-%d %H:%M')} "
+        f"({timezone})"
     )
-    lines.append(f"_Timezone: {timezone}_")
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -264,8 +291,8 @@ def render_window(
 
         for block in hp_groups.values():
             sender_label = format_sender(
-                block.get("sender_display"),
-                block.get("sender_email"),
+                block.get("display"),
+                block.get("email"),
             )
             lines.append(f"### {sender_label}")
             lines.append("")
@@ -274,6 +301,15 @@ def render_window(
                 t = _fmt_time(m["date_utc"], tz)
                 lines.append(f"**{m.get('subject') or '(no subject)'}**")
                 lines.append(f"_{t}_")
+
+                to_addrs = _parse_json_list(m.get("recipients_to"))
+                cc_addrs = _parse_json_list(m.get("recipients_cc"))
+                if m.get("sender"):
+                    lines.append(f"- From: {m['sender']}")
+                if to_addrs:
+                    lines.append(f"- To: {_fmt_addrs(to_addrs)}")
+                if cc_addrs:
+                    lines.append(f"- Cc: {_fmt_addrs(cc_addrs)}")
 
                 ex = normalize_excerpt(m["extracted_new_text"])
                 if ex:
@@ -299,6 +335,13 @@ def render_window(
                 t = _fmt_time(m["date_utc"], tz)
                 lines.append(f"- **{t} — {m['sender']}**")
 
+                to_addrs = _parse_json_list(m.get("recipients_to"))
+                cc_addrs = _parse_json_list(m.get("recipients_cc"))
+                if to_addrs:
+                    lines.append(f"  - To: {_fmt_addrs(to_addrs)}")
+                if cc_addrs:
+                    lines.append(f"  - Cc: {_fmt_addrs(cc_addrs)}")
+
                 ex = normalize_excerpt(m["extracted_new_text"])
                 if ex:
                     for ln in ex.splitlines():
@@ -316,7 +359,12 @@ def render_window(
         lines.append("")
         for m in arrival_msgs:
             t = _fmt_time(m["date_utc"], tz)
-            lines.append(f"- {t} — {m.get('subject') or '(no subject)'}")
+            subj = m.get("subject") or "(no subject)"
+            sender = m.get("sender") or ""
+            if sender:
+                lines.append(f"- {t} — {subj} ({sender})")
+            else:
+                lines.append(f"- {t} — {subj}")
         lines.append("")
 
     # ------------------------------------------------------------
@@ -327,7 +375,11 @@ def render_window(
     outdir.mkdir(parents=True, exist_ok=True)
 
     day = start_local.day
-    (outdir / f"{day:02d}.md").write_text(
+    md_path = outdir / f"{day:02d}.md"
+    html_path = outdir / f"{day:02d}.html"
+
+    md_path.write_text(
         "\n".join(lines),
         encoding="utf-8",
     )
+    write_report_html(md_path, html_path)
