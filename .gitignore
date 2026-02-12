@@ -137,12 +137,16 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+.daily.policy.local.yml
+daily.policy.yml
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+holidays/wri.ics
+holidays/wri-*.ics
 
 # Spyder project settings
 .spyderproject

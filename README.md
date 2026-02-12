@@ -169,6 +169,23 @@ or
 uv run mailtriage run --config config.yml --date 2025-01-15
 ```
 
+## Background Daily Run (No Server)
+
+Use the daily runner for scheduled execution, holiday-aware notification suppression,
+and a `latest.md` pointer to the newest report:
+
+```bash
+uv run mailtriage-daily --config config.yml --policy daily.policy.yml
+```
+
+Use the redacted sample to create a local policy:
+
+```bash
+cp daily.policy.example.yml daily.policy.yml
+```
+
+See `/Users/dooley/Documents/GithubClone/MailTriage/docs/daily-runner.md` for launchd setup and policy options.
+
 ---
 
 ## Design Constraints

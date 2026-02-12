@@ -1,0 +1,31 @@
+country: US
+subdiv:
+env_file: .env
+
+# YYYY-MM-DD lines, one per line. These are always treated as holidays.
+manual_holidays_file: holidays/manual_holidays.txt
+
+# YYYY-MM-DD lines, one per line. These force a workday even if country/ICS marks a holiday.
+manual_workdays_file: holidays/manual_workdays.txt
+
+# Optional ICS files with DTSTART/DTEND all-day events.
+ics_files:
+  - holidays/company.ics
+
+holiday_download:
+  enabled: true
+  run_month_day: "01-01"
+  # Name of env var containing the holiday ICS URL.
+  url_env: ORG_HOLIDAYS_URL
+  # Optional hardcoded URL fallback.
+  url:
+  # Local destination for downloaded ICS.
+  output_file_template: holidays/company.ics
+  # Optional host that only resolves on VPN.
+  vpn_check_host:
+  remind_if_missing: true
+
+notification:
+  enabled: true
+  open_report: false
+  suppress_on_non_workday: true

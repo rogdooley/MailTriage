@@ -33,14 +33,15 @@ def compute_windows(
     if n <= 0:
         raise ValueError("--days must be >= 1")
 
-    # Anchor to the most recent workday boundary ≤ now
+    # Anchor to the most recent workday boundary <= now.
+    # The latest *completed* window starts one day before that boundary.
     today = now_local.date()
     today_start = datetime.combine(today, time(hh, mm), tzinfo=tz)
 
     if now_local >= today_start:
-        last_completed_day = today
-    else:
         last_completed_day = today - timedelta(days=1)
+    else:
+        last_completed_day = today - timedelta(days=2)
 
     days_list = [last_completed_day - timedelta(days=i) for i in range(n)]
 
