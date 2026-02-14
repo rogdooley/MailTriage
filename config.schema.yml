@@ -1,7 +1,7 @@
 version: 1
 
-rootdir: path
-timezone: string
+output:
+  root: path # absolute path
 
 accounts:
   - id: string
@@ -44,3 +44,14 @@ tickets:
 time:
   timezone: string # e.g. America/New_York
   workday_start: string # HH:MM (24h)
+
+watch:
+  ingest_lookback_days: int # hard cap for IMAP scanning in watch mode
+  unreplied:
+    enabled: bool
+    rules:
+      - id: string
+        target_addresses: [string]
+        unreplied_after_minutes: int
+        lookback_days: int
+        notify_cooldown_minutes: int

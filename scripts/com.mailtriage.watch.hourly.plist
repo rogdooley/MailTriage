@@ -3,23 +3,18 @@
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>com.dooley.mailtriage.daily</string>
+    <string>com.mailtriage.watch.hourly</string>
 
     <key>ProgramArguments</key>
     <array>
-      <string>/Users/dooley/Documents/GithubClone/MailTriage/scripts/run_daily_mailtriage.sh</string>
+      <string>/Users/dooley/Documents/GithubClone/MailTriage/scripts/run_watch_mailtriage_launchd.sh</string>
     </array>
 
     <key>RunAtLoad</key>
     <true/>
 
-    <key>StartCalendarInterval</key>
-    <dict>
-      <key>Hour</key>
-      <integer>9</integer>
-      <key>Minute</key>
-      <integer>5</integer>
-    </dict>
+    <key>StartInterval</key>
+    <integer>3600</integer>
 
     <key>StandardOutPath</key>
     <string>/dev/null</string>

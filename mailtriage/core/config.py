@@ -77,12 +77,34 @@ class TicketsConfig:
 
 
 @dataclass(frozen=True)
+class UnrepliedRuleConfig:
+    id: str
+    target_addresses: list[str] = field(default_factory=list)
+    unreplied_after_minutes: int = 60
+    lookback_days: int = 14
+    notify_cooldown_minutes: int = 60
+
+
+@dataclass(frozen=True)
+class UnrepliedWatchConfig:
+    enabled: bool = False
+    rules: list[UnrepliedRuleConfig] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class WatchConfig:
+    ingest_lookback_days: int = 7
+    unreplied: UnrepliedWatchConfig = field(default_factory=UnrepliedWatchConfig)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     rootdir: Path
     time: TimeConfig
     accounts: list[AccountConfig]
     rules: RulesConfig
     tickets: TicketsConfig
+    watch: WatchConfig
 
     def state_db_path(self) -> Path:
         return self.rootdir / ".mailtriage" / "state.db"
@@ -110,7 +132,7 @@ def load_config(path: Path) -> AppConfig:
         raise ConfigError("Config must be a YAML mapping at top-level")
 
     _reject_unknown(
-        raw, {"output", "time", "accounts", "rules", "tickets"}, "root config"
+        raw, {"output", "time", "accounts", "rules", "tickets", "watch"}, "root config"
     )
 
     output_raw = raw.get("output")
@@ -127,6 +149,69 @@ def load_config(path: Path) -> AppConfig:
     accounts_raw = _require(raw, "accounts")
     rules_raw = _require(raw, "rules")
     tickets_raw = raw.get("tickets", {"enabled": False, "plugins": []})
+    watch_raw = raw.get("watch", {}) or {}
+    if not isinstance(watch_raw, dict):
+        raise ConfigError("watch must be a mapping")
+    _reject_unknown(watch_raw, {"unreplied", "ingest_lookback_days"}, "watch")
+
+    unreplied_raw = watch_raw.get("unreplied", {}) or {}
+    if not isinstance(unreplied_raw, dict):
+        raise ConfigError("watch.unreplied must be a mapping")
+    _reject_unknown(
+        unreplied_raw,
+        {"enabled", "rules"},
+        "watch.unreplied",
+    )
+
+    rules_raw = unreplied_raw.get("rules") or []
+    if not isinstance(rules_raw, list):
+        raise ConfigError("watch.unreplied.rules must be a list")
+
+    rules: list[UnrepliedRuleConfig] = []
+    for rr in rules_raw:
+        if not isinstance(rr, dict):
+            raise ConfigError("each watch.unreplied.rules entry must be a mapping")
+        _reject_unknown(
+            rr,
+            {
+                "id",
+                "target_addresses",
+                "unreplied_after_minutes",
+                "lookback_days",
+                "notify_cooldown_minutes",
+            },
+            "watch.unreplied.rules[]",
+        )
+        rid = str(_require(rr, "id")).strip()
+        if not rid:
+            raise ConfigError("watch.unreplied.rules[].id must be non-empty")
+
+        target_addresses = rr.get("target_addresses") or []
+        if not isinstance(target_addresses, list) or not all(
+            isinstance(x, str) for x in target_addresses
+        ):
+            raise ConfigError(
+                "watch.unreplied.rules[].target_addresses must be a list of strings"
+            )
+
+        rules.append(
+            UnrepliedRuleConfig(
+                id=rid,
+                target_addresses=[str(x) for x in target_addresses],
+                unreplied_after_minutes=int(rr.get("unreplied_after_minutes", 60) or 60),
+                lookback_days=int(rr.get("lookback_days", 14) or 14),
+                notify_cooldown_minutes=int(
+                    rr.get("notify_cooldown_minutes", 60) or 60
+                ),
+            )
+        )
+
+    unreplied_watch = UnrepliedWatchConfig(
+        enabled=bool(unreplied_raw.get("enabled", False)),
+        rules=rules,
+    )
+    ingest_lookback_days = int(watch_raw.get("ingest_lookback_days", 7) or 7)
+    watch_cfg = WatchConfig(ingest_lookback_days=ingest_lookback_days, unreplied=unreplied_watch)
 
     if not isinstance(time_raw, dict):
         raise ConfigError("time must be a mapping")
@@ -242,4 +327,5 @@ def load_config(path: Path) -> AppConfig:
         accounts=accounts,
         rules=rules_cfg,
         tickets=tickets_cfg,
+        watch=watch_cfg,
     )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import os
 
@@ -16,6 +16,9 @@ from mailtriage.ingest.ingest import SecretProviderError
 from mailtriage.ingest.ingest import ingest_account
 from mailtriage.render.window import render_window
 from mailtriage.render.site import render_index
+from mailtriage.watch.notify_unreplied import UnrepliedRule as _UnrepliedRuleCfg
+from mailtriage.watch.notify_unreplied import UnrepliedWatchConfig as _UnrepliedWatchCfg
+from mailtriage.watch.notify_unreplied import run_unreplied_watch
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     g = run.add_mutually_exclusive_group()
     g.add_argument("--days", type=int, default=None)
     g.add_argument("--date", type=str, default=None)  # YYYY-MM-DD
+
+    watch = sub.add_parser("watch", help="Ingest recent mail and run watchers (no report)")
+    watch.add_argument(
+        "--config",
+        type=Path,
+        default=Path("config.yml"),
+        help="Path to config file (default: ./config.yml)",
+    )
 
     return p
 
@@ -78,14 +89,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     ns = parser.parse_args(argv)
 
-    if ns.command != "run":
+    if ns.command == "run":
+        args = Args(
+            config=ns.config,
+            days=ns.days,
+            date=ns.date,
+        )
+    elif ns.command == "watch":
+        args = Args(
+            config=ns.config,
+            days=None,
+            date=None,
+        )
+    else:
         parser.error("Unsupported command")
-
-    args = Args(
-        config=ns.config,
-        days=ns.days,
-        date=ns.date,
-    )
 
     cfg = load_config(args.config)
 
@@ -105,12 +122,28 @@ def main(argv: list[str] | None = None) -> int:
         )
         verify_schema_hash(db)
 
-        windows = compute_windows(
-            timezone=cfg.time.timezone,
-            workday_start=cfg.time.workday_start,
-            days=args.days,
-            date=args.date,
-        )
+        if ns.command == "run":
+            windows = compute_windows(
+                timezone=cfg.time.timezone,
+                workday_start=cfg.time.workday_start,
+                days=args.days,
+                date=args.date,
+            )
+        else:
+            # Rolling ingestion window for watch mode.
+            now_utc = datetime.now(timezone.utc)
+            lookback_days = max(1, int(cfg.watch.ingest_lookback_days or 1))
+            start_utc = now_utc - timedelta(days=lookback_days)
+
+            class _W:
+                start_utc: str
+                end_utc: str
+
+                def __init__(self, s: datetime, e: datetime) -> None:
+                    self.start_utc = s.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    self.end_utc = e.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            windows = [_W(start_utc, now_utc)]
 
         # optional bookkeeping
         for w in windows:
@@ -142,7 +175,28 @@ def main(argv: list[str] | None = None) -> int:
             notify("MailTriage", f"Cannot fetch secrets: {e}")
             raise
 
-        # Refresh static viewer page after rendering.
-        render_index(rootdir)
+        if ns.command == "run":
+            # Refresh static viewer page after rendering.
+            render_index(rootdir)
+
+        # Watch: unreplied threads (rules)
+        rules = [
+            _UnrepliedRuleCfg(
+                id=r.id,
+                target_addresses=r.target_addresses,
+                lookback_days=r.lookback_days,
+                unreplied_after_minutes=r.unreplied_after_minutes,
+                notify_cooldown_minutes=r.notify_cooldown_minutes,
+            )
+            for r in cfg.watch.unreplied.rules
+        ]
+        run_unreplied_watch(
+            db=db,
+            cfg=_UnrepliedWatchCfg(
+                enabled=cfg.watch.unreplied.enabled,
+                rules=rules,
+                output_root=rootdir,
+            ),
+        )
 
     return 0

@@ -55,6 +55,52 @@ For background runs, the recommended approach is to use a Bitwarden CLI session 
 - When locked, the runner can show a copy/paste command (and copy it to clipboard) to populate that file
 - Future runs load the token from that file into `BW_SESSION`
 
+## Bitwarden Unlock (Keychain/Secret Store)
+
+For unattended background runs without keeping the vault unlocked, the launchd wrapper can:
+
+1. Read your Bitwarden master password from an OS secret store
+2. Run `bw unlock --passwordenv BW_PASSWORD --raw` to get a per-run session token
+3. Run MailTriage
+4. Immediately `bw lock`
+
+This avoids a plaintext password file.
+
+### macOS (Keychain)
+
+Store or update the master password in Keychain (service is `mailtriage/bitwarden`, account is your macOS username):
+
+```bash
+security add-generic-password -U -s "mailtriage/bitwarden" -a "$USER" -w
+```
+
+Verify you can read it:
+
+```bash
+security find-generic-password -w -s "mailtriage/bitwarden" -a "$USER" >/dev/null && echo OK
+```
+
+### Linux (Secret Service)
+
+Store (you'll be prompted):
+
+```bash
+secret-tool store --label="MailTriage Bitwarden" service mailtriage/bitwarden user "$USER"
+```
+
+Verify:
+
+```bash
+secret-tool lookup service mailtriage/bitwarden user "$USER" >/dev/null && echo OK
+```
+
+### Override Keys (Optional)
+
+The launch wrapper supports:
+
+- `MAILTRIAGE_BW_STORE_SERVICE` (default `mailtriage/bitwarden`)
+- `MAILTRIAGE_BW_STORE_USER` (default `$USER`)
+
 ## Run manually
 
 ```bash
@@ -96,3 +142,30 @@ launchctl load ~/Library/LaunchAgents/com.mailtriage.daily.plist
 Logs are pruned automatically after 7 days.
 
 The provided plist runs daily at `09:05` and also at login (`RunAtLoad`), which covers late starts.
+
+## Hourly Watch Job (macOS)
+
+If you enable `watch.unreplied`, run an hourly watcher to avoid missing messages during the day:
+
+1. Copy the plist:
+
+```bash
+cp /Users/dooley/Documents/GithubClone/MailTriage/scripts/com.mailtriage.watch.hourly.plist ~/Library/LaunchAgents/
+```
+
+2. Load it:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.mailtriage.watch.hourly.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/com.mailtriage.watch.hourly.plist
+```
+
+3. Logs:
+
+- `<output.root>/.mailtriage/logs/watch-YYYY-MM-DD.out.log`
+- `<output.root>/.mailtriage/logs/watch-YYYY-MM-DD.err.log`
+
+Notifications:
+
+- macOS notifications use `terminal-notifier` if installed (`brew install terminal-notifier`).
+- When an unreplied-SLA rule triggers, the notification opens `<output.root>/watch/unreplied.html` on click.

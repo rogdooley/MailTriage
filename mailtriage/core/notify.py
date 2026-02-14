@@ -11,7 +11,7 @@ import webbrowser
 from pathlib import Path
 
 
-def notify(title: str, message: str) -> None:
+def notify(title: str, message: str, *, open_url: str | None = None) -> None:
     """
     Best-effort desktop notification.
 
@@ -26,8 +26,11 @@ def notify(title: str, message: str) -> None:
     # macOS: avoid AppleScript notifications because clicking them often opens Script Editor.
     # Use terminal-notifier if installed; otherwise, no-op.
     if plat == "darwin" and shutil.which("terminal-notifier"):
+        args = ["terminal-notifier", "-title", title, "-message", message]
+        if open_url:
+            args += ["-open", open_url]
         subprocess.run(
-            ["terminal-notifier", "-title", title, "-message", message],
+            args,
             check=False,
         )
         return
