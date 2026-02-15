@@ -163,12 +163,12 @@ def load_config(path: Path) -> AppConfig:
         "watch.unreplied",
     )
 
-    rules_raw = unreplied_raw.get("rules") or []
-    if not isinstance(rules_raw, list):
+    watch_rules_raw = unreplied_raw.get("rules") or []
+    if not isinstance(watch_rules_raw, list):
         raise ConfigError("watch.unreplied.rules must be a list")
 
     rules: list[UnrepliedRuleConfig] = []
-    for rr in rules_raw:
+    for rr in watch_rules_raw:
         if not isinstance(rr, dict):
             raise ConfigError("each watch.unreplied.rules entry must be a mapping")
         _reject_unknown(
