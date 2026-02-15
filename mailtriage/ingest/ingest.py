@@ -54,6 +54,33 @@ class BitwardenSecretProvider(SecretProvider):
 
     def resolve(self, reference: str) -> ResolvedSecrets:
         try:
+            def _bw_cmd(*args: str) -> list[str]:
+                # Prefer non-interactive mode so background runs fail fast instead of hanging
+                # waiting for password/unlock prompts.
+                return [self._bw_bin, "--nointeraction", *args]
+
+            def _run_bw(*args: str, timeout: int) -> subprocess.CompletedProcess[str]:
+                try:
+                    return subprocess.run(
+                        _bw_cmd(*args),
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                    )
+                except subprocess.CalledProcessError as e:
+                    # Older bw versions may not support --nointeraction; retry without it.
+                    err = (e.stderr or e.stdout or "").lower()
+                    if "unknown option" in err or "unknown flag" in err or "no such option" in err:
+                        return subprocess.run(
+                            [self._bw_bin, *args],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout,
+                        )
+                    raise
+
             # Avoid hanging on interactive prompts. If `BW_SESSION` is present,
             # do NOT use `bw status` as a gate: some installations report
             # "locked" even when a valid session token is set.
@@ -61,13 +88,7 @@ class BitwardenSecretProvider(SecretProvider):
             self._debug("BW_SESSION present: " + ("yes" if has_session else "no"))
 
             if not has_session:
-                status = subprocess.run(
-                    [self._bw_bin, "status"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
+                status = _run_bw("status", timeout=10)
                 try:
                     st = json.loads(status.stdout)
                     s = str(st.get("status", "")).lower()
@@ -81,13 +102,7 @@ class BitwardenSecretProvider(SecretProvider):
                     pass
 
             self._debug(f"Fetching item {reference!r}")
-            proc = subprocess.run(
-                [self._bw_bin, "get", "item", reference],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
+            proc = _run_bw("get", "item", reference, timeout=20)
         except FileNotFoundError as e:
             raise SecretProviderError("Bitwarden CLI not found") from e
         except subprocess.TimeoutExpired as e:
