@@ -58,6 +58,7 @@ class BitwardenSecretProvider(SecretProvider):
     def resolve(self, reference: str) -> ResolvedSecrets:
         try:
             unlocked_here = False
+            attempted_auto_unlock = False
 
             def _bw_cmd(*args: str) -> list[str]:
                 # Prefer non-interactive mode so background runs fail fast instead of hanging
@@ -128,11 +129,13 @@ class BitwardenSecretProvider(SecretProvider):
 
             def _auto_unlock_from_secret_store() -> bool:
                 nonlocal unlocked_here
+                nonlocal attempted_auto_unlock
                 if os.environ.get("BW_SESSION"):
                     return True
                 pw = _secret_store_password()
                 if not pw:
                     return False
+                attempted_auto_unlock = True
                 try:
                     session = subprocess.run(
                         _bw_cmd("unlock", "--passwordenv", "BW_PASSWORD", "--raw"),
@@ -195,7 +198,30 @@ class BitwardenSecretProvider(SecretProvider):
                     pass
 
             self._debug(f"Fetching item {reference!r}")
-            proc = _run_bw("get", "item", reference, timeout=20)
+            try:
+                proc = _run_bw("get", "item", reference, timeout=20)
+            except subprocess.CalledProcessError as e:
+                # If BW_SESSION was provided but is stale/invalid, try a keychain unlock
+                # and retry once.
+                err = (e.stderr or e.stdout or "").strip()
+                low = err.lower()
+                if has_session and (
+                    ("locked" in low)
+                    or ("unlock" in low)
+                    or ("session" in low)
+                    or ("unauthorized" in low)
+                    or ("invalid" in low)
+                ):
+                    self._debug("bw get failed with session error; retrying after secret-store unlock")
+                    os.environ.pop("BW_SESSION", None)
+                    has_session = False
+                    if (not attempted_auto_unlock) and _auto_unlock_from_secret_store():
+                        has_session = True
+                        proc = _run_bw("get", "item", reference, timeout=20)
+                    else:
+                        raise
+                else:
+                    raise
         except FileNotFoundError as e:
             raise SecretProviderError("Bitwarden CLI not found") from e
         except subprocess.TimeoutExpired as e:
