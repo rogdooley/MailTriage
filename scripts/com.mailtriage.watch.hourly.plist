@@ -7,8 +7,20 @@
 
     <key>ProgramArguments</key>
     <array>
-      <string>/Users/dooley/Documents/GithubClone/MailTriage/scripts/run_watch_mailtriage_launchd.sh</string>
+      <string>/bin/bash</string>
+      <string>-lc</string>
+      <string>$MAILTRIAGE_REPO/scripts/run_watch_mailtriage_launchd.sh</string>
     </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>MAILTRIAGE_REPO</key>
+      <string>/path/to/MailTriage</string>
+      <key>MAILTRIAGE_CONFIG</key>
+      <string>/path/to/MailTriage/config.yml</string>
+      <key>MAILTRIAGE_POLICY</key>
+      <string>/path/to/MailTriage/daily.policy.yml</string>
+    </dict>
 
     <key>RunAtLoad</key>
     <true/>

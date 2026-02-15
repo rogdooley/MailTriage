@@ -210,6 +210,7 @@ def run_unreplied_watch(*, db, cfg: UnrepliedWatchConfig, now_utc: datetime | No
 
     total_notified = 0
     notified_by_rule: dict[str, list[UnrepliedThread]] = {}
+    notify_messages: list[tuple[str, str]] = []  # (title, body)
     for rule in cfg.rules:
         if not rule.target_addresses:
             continue
@@ -251,14 +252,17 @@ def run_unreplied_watch(*, db, cfg: UnrepliedWatchConfig, now_utc: datetime | No
             subj = t.subject or "(no subject)"
             lines.append(f"- {subj} ({t.sender})")
 
-        open_url = None
-        if cfg.output_root:
-            try:
-                watch_page = _write_watch_html(output_root=cfg.output_root, by_rule=notified_by_rule)
-                open_url = watch_page.as_uri()
-            except Exception:
-                open_url = None
+        notify_messages.append(("MailTriage", "\n".join(lines)))
 
-        notify("MailTriage", "\n".join(lines), open_url=open_url)
+    open_url = None
+    if total_notified and cfg.output_root:
+        try:
+            watch_page = _write_watch_html(output_root=cfg.output_root, by_rule=notified_by_rule)
+            open_url = watch_page.as_uri()
+        except Exception:
+            open_url = None
+
+    for title, body in notify_messages:
+        notify(title, body, open_url=open_url)
 
     return total_notified

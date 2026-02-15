@@ -162,14 +162,15 @@ def main(argv: list[str] | None = None) -> int:
                         window_end_utc=end_dt,
                     )
 
-                render_window(
-                    db=db,
-                    window_start_utc=start_dt,
-                    window_end_utc=end_dt,
-                    rootdir=rootdir,
-                    rules=cfg.rules,
-                    timezone=cfg.time.timezone,
-                )
+                if ns.command == "run":
+                    render_window(
+                        db=db,
+                        window_start_utc=start_dt,
+                        window_end_utc=end_dt,
+                        rootdir=rootdir,
+                        rules=cfg.rules,
+                        timezone=cfg.time.timezone,
+                    )
         except SecretProviderError as e:
             # Best-effort: show a desktop notification in addition to the error.
             notify("MailTriage", f"Cannot fetch secrets: {e}")

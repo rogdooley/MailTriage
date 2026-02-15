@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${MAILTRIAGE_REPO:-/Users/dooley/Documents/GithubClone/MailTriage}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${MAILTRIAGE_REPO:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 CONFIG_PATH="${MAILTRIAGE_CONFIG:-$REPO/config.yml}"
 POLICY_PATH="${MAILTRIAGE_POLICY:-$REPO/daily.policy.yml}"
 

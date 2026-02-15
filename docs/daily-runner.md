@@ -147,10 +147,10 @@ The provided plist runs daily at `09:05` and also at login (`RunAtLoad`), which 
 
 If you enable `watch.unreplied`, run an hourly watcher to avoid missing messages during the day:
 
-1. Copy the plist:
+1. Copy the plist and edit the `EnvironmentVariables` section:
 
 ```bash
-cp /Users/dooley/Documents/GithubClone/MailTriage/scripts/com.mailtriage.watch.hourly.plist ~/Library/LaunchAgents/
+cp scripts/com.mailtriage.watch.hourly.plist ~/Library/LaunchAgents/
 ```
 
 2. Load it:

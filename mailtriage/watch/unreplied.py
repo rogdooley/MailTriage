@@ -50,36 +50,56 @@ def find_unreplied_threads(
 
     addr_where = " OR ".join(conds)
 
+    # Find the earliest inbound message in each thread addressed to target_addresses
+    # (within lookback), then consider it "unreplied" only if it is also the
+    # newest message in the entire thread (within lookback).
+    cutoff_z = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     sql = f"""
-    SELECT m.thread_id, m.date_utc, m.sender, m.subject
-    FROM messages m
-    JOIN (
+    WITH req AS (
+      SELECT
+        m.thread_id,
+        m.message_id,
+        m.date_utc,
+        m.sender,
+        m.subject,
+        ROW_NUMBER() OVER (
+          PARTITION BY m.thread_id
+          ORDER BY m.date_utc ASC, m.message_id ASC
+        ) AS rn
+      FROM messages m
+      WHERE m.date_utc >= ?
+        AND m.inbound = 1
+        AND ({addr_where})
+    ),
+    maxes AS (
       SELECT thread_id, MAX(date_utc) AS max_date
       FROM messages
       WHERE date_utc >= ?
       GROUP BY thread_id
-    ) t
-      ON t.thread_id = m.thread_id AND t.max_date = m.date_utc
-    WHERE m.inbound = 1
-      AND ({addr_where})
-    ORDER BY m.date_utc ASC
+    )
+    SELECT r.thread_id, r.date_utc, r.sender, r.subject
+    FROM req r
+    JOIN maxes mx ON mx.thread_id = r.thread_id
+    WHERE r.rn = 1
+      AND mx.max_date = r.date_utc
+    ORDER BY r.date_utc ASC
     """.strip()
 
-    rows = db.conn.execute(
-        sql,
-        (
-            cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            *params,
-        ),
-    ).fetchall()
+    rows = db.conn.execute(sql, (cutoff_z, *params, cutoff_z)).fetchall()
 
     out: list[UnrepliedThread] = []
+    seen: set[str] = set()
     for r in rows:
+        tid = str(r[0])
+        if tid in seen:
+            continue
+        seen.add(tid)
         dt = datetime.fromisoformat(str(r[1]).replace("Z", "+00:00"))
         if now_utc - dt >= timedelta(minutes=unreplied_after_minutes):
             out.append(
                 UnrepliedThread(
-                    thread_id=str(r[0]),
+                    thread_id=tid,
                     date_utc=str(r[1]),
                     sender=str(r[2]),
                     subject=str(r[3]),
