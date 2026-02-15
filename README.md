@@ -3,9 +3,9 @@
 MailTriage is a local, batch-oriented IMAP email triage tool.
 
 It ingests email in read-only mode, stores normalized state in SQLite, and produces
-daily Markdown and JSON summaries grouped by priority and thread.
+daily Markdown, HTML, and JSON summaries grouped by priority and thread.
 
-There is no server, no daemon, and no UI.
+There is no server and no daemon. Output is written to local files.
 
 ---
 
@@ -15,6 +15,7 @@ There is no server, no daemon, and no UI.
 - uv
 - IMAP account access
 - Optional: Bitwarden CLI (`bw`)
+- Optional (macOS notifications): `terminal-notifier`
 
 ---
 
@@ -74,6 +75,12 @@ rules:
 tickets:
   enabled: false
   plugins: []
+
+watch:
+  ingest_lookback_days: 7
+  unreplied:
+    enabled: false
+    rules: []
 ```
 
 ---
@@ -91,12 +98,27 @@ No custom fields are required.
 
 MailTriage does not store Bitwarden data.
 
-Before running MailTriage:
+### Interactive setup (once)
 
 ```bash
 bw login
-bw unlock
 ```
+
+### Non-interactive unlock (recommended on macOS)
+
+If `bw` is locked, MailTriage can auto-unlock using your OS secret store.
+
+macOS Keychain (service is `mailtriage/bitwarden`, account is your macOS username):
+
+```bash
+security add-generic-password -U -s "mailtriage/bitwarden" -a "$USER" -w
+security find-generic-password -w -s "mailtriage/bitwarden" -a "$USER" >/dev/null && echo OK
+```
+
+Optional overrides:
+
+- `MAILTRIAGE_BW_STORE_SERVICE` (default `mailtriage/bitwarden`)
+- `MAILTRIAGE_BW_STORE_USER` (default `$USER`)
 
 ---
 
@@ -109,13 +131,18 @@ All output is written under `output.root`.
 ├── YYYY/
 │   └── MM/
 │       ├── DD.md
+│       ├── DD.html
 │       └── DD.json
+├── index.html
+├── latest.md
+├── watch/
+│   └── unreplied.html
 └── .mailtriage/
     └── state.db
 ```
 
-- Reports are overwritten on each run
-- `state.db` persists ingestion state
+- `state.db` persists ingestion state.
+- Reports are overwritten for the same day/window.
 
 ---
 
@@ -169,6 +196,12 @@ or
 uv run mailtriage run --config config.yml --date 2025-01-15
 ```
 
+## Static Viewer (No Server)
+
+After generating reports, open:
+
+- `<output.root>/index.html` (sidebar of days, newest-first)
+
 ## Background Daily Run (No Server)
 
 Use the daily runner for scheduled execution, holiday-aware notification suppression,
@@ -183,6 +216,20 @@ Use the redacted sample to create a local policy:
 ```bash
 cp daily.policy.example.yml daily.policy.yml
 ```
+
+See `docs/daily-runner.md` for launchd setup, Bitwarden unlock options, and logging paths.
+
+## Watch Mode (Hourly Checks)
+
+Watch mode ingests a rolling lookback window (configurable) and runs watchers (no reports).
+
+```bash
+uv run mailtriage watch --config config.yml
+```
+
+If `watch.unreplied` is enabled, the hourly watcher writes:
+
+- `<output.root>/watch/unreplied.html`
 
 ---
 
