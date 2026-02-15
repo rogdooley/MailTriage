@@ -9,6 +9,9 @@ import signal
 import socket
 import subprocess
 import sys
+import atexit
+import getpass
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import message_from_bytes
@@ -54,6 +57,8 @@ class BitwardenSecretProvider(SecretProvider):
 
     def resolve(self, reference: str) -> ResolvedSecrets:
         try:
+            unlocked_here = False
+
             def _bw_cmd(*args: str) -> list[str]:
                 # Prefer non-interactive mode so background runs fail fast instead of hanging
                 # waiting for password/unlock prompts.
@@ -81,11 +86,99 @@ class BitwardenSecretProvider(SecretProvider):
                         )
                     raise
 
+            def _lock_at_exit() -> None:
+                try:
+                    _run_bw("lock", timeout=8)
+                except Exception:
+                    pass
+
+            def _secret_store_password() -> str | None:
+                svc = os.environ.get("MAILTRIAGE_BW_STORE_SERVICE") or "mailtriage/bitwarden"
+                user = os.environ.get("MAILTRIAGE_BW_STORE_USER") or getpass.getuser()
+
+                # macOS Keychain
+                if sys.platform == "darwin" and shutil.which("security"):
+                    try:
+                        p = subprocess.run(
+                            ["security", "find-generic-password", "-w", "-s", svc, "-a", user],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        ).stdout.strip()
+                        return p or None
+                    except Exception:
+                        return None
+
+                # Linux Secret Service
+                if sys.platform.startswith("linux") and shutil.which("secret-tool"):
+                    try:
+                        p = subprocess.run(
+                            ["secret-tool", "lookup", "service", svc, "user", user],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        ).stdout.strip()
+                        return p or None
+                    except Exception:
+                        return None
+
+                return None
+
+            def _auto_unlock_from_secret_store() -> bool:
+                nonlocal unlocked_here
+                if os.environ.get("BW_SESSION"):
+                    return True
+                pw = _secret_store_password()
+                if not pw:
+                    return False
+                try:
+                    session = subprocess.run(
+                        _bw_cmd("unlock", "--passwordenv", "BW_PASSWORD", "--raw"),
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        env={**os.environ, "BW_PASSWORD": pw},
+                    ).stdout.strip()
+                except subprocess.CalledProcessError as e:
+                    # Older bw versions may not support --nointeraction; retry without it.
+                    err = (e.stderr or e.stdout or "").lower()
+                    if "unknown option" in err or "unknown flag" in err or "no such option" in err:
+                        try:
+                            session = subprocess.run(
+                                [self._bw_bin, "unlock", "--passwordenv", "BW_PASSWORD", "--raw"],
+                                check=True,
+                                capture_output=True,
+                                text=True,
+                                timeout=15,
+                                env={**os.environ, "BW_PASSWORD": pw},
+                            ).stdout.strip()
+                        except Exception:
+                            return False
+                    else:
+                        return False
+                except Exception:
+                    return False
+
+                if not session:
+                    return False
+                os.environ["BW_SESSION"] = session
+                unlocked_here = True
+                atexit.register(_lock_at_exit)
+                return True
+
             # Avoid hanging on interactive prompts. If `BW_SESSION` is present,
             # do NOT use `bw status` as a gate: some installations report
             # "locked" even when a valid session token is set.
             has_session = bool(os.environ.get("BW_SESSION"))
             self._debug("BW_SESSION present: " + ("yes" if has_session else "no"))
+
+            if not has_session:
+                # Try OS keychain/secret-service unlock first (helps both manual and launchd runs).
+                if _auto_unlock_from_secret_store():
+                    has_session = True
 
             if not has_session:
                 status = _run_bw("status", timeout=10)
