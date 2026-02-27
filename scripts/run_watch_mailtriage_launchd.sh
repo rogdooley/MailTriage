@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${MAILTRIAGE_REPO:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 CONFIG_PATH="${MAILTRIAGE_CONFIG:-$REPO/config.yml}"
 POLICY_PATH="${MAILTRIAGE_POLICY:-$REPO/daily.policy.yml}"
+PY_BIN="${MAILTRIAGE_PYTHON:-$REPO/.venv/bin/python}"
 
 # Allow launchd/cron to pass explicit config/policy paths as args.
 if [[ $# -ge 1 && -n "${1:-}" ]]; then
@@ -16,10 +17,21 @@ fi
 
 cd "$REPO"
 
+if [[ ! -x "${PY_BIN}" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PY_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PY_BIN="$(command -v python)"
+  else
+    echo "No usable Python found. Set MAILTRIAGE_PYTHON or create $REPO/.venv." >&2
+    exit 2
+  fi
+fi
+
 # Resolve output.root and timezone from config.
 export MAILTRIAGE_CONFIG_PATH="$CONFIG_PATH"
 read -r ROOTDIR TZNAME <<EOF
-$(uv run python - <<'PY'
+$("${PY_BIN}" - <<'PY'
 import os
 from pathlib import Path
 from mailtriage.core.config import load_config
@@ -39,7 +51,7 @@ if [[ -z "${TZNAME}" ]]; then
   TZNAME="UTC"
 fi
 
-DATE_STR="$(uv run python - <<PY
+DATE_STR="$("${PY_BIN}" - <<PY
 from datetime import datetime
 from zoneinfo import ZoneInfo
 print(datetime.now(ZoneInfo("${TZNAME}")).strftime("%Y-%m-%d"))
@@ -104,7 +116,7 @@ ERR_LOG="${LOGDIR}/watch-${DATE_STR}.err.log"
 } >>"$OUT_LOG"
 
 # Watch mode ingests a rolling lookback and notifies only when a rule triggers.
-uv run mailtriage watch --config "$CONFIG_PATH" >>"$OUT_LOG" 2>>"$ERR_LOG"
+"${PY_BIN}" -m mailtriage.cli watch --config "$CONFIG_PATH" >>"$OUT_LOG" 2>>"$ERR_LOG"
 
 {
   echo
