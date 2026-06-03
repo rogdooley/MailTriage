@@ -235,6 +235,9 @@ If you see frequent timeout errors, increase `MAILTRIAGE_LITELLM_TIMEOUT_SEC`,
 reduce `MAILTRIAGE_LITELLM_MAX_THREADS`, reduce `MAILTRIAGE_LITELLM_MAX_MESSAGES_PER_THREAD`,
 and/or lower `MAILTRIAGE_LITELLM_MAX_CHARS_PER_MESSAGE`.
 
+If important threads are missing from todo extraction, increase `MAILTRIAGE_LITELLM_MAX_THREADS`
+or run with `MAILTRIAGE_DEBUG=1` to see when thread capping is applied.
+
 Behavior on each `mailtriage run` window:
 
 - Reads `<MAILTRIAGE_TODO_ROOT>/running.md` (creates it if missing)

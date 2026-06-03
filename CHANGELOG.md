@@ -18,3 +18,4 @@ All notable changes to this project are documented in this file.
 - Added subject-based fallback todo entries when the model returns no parseable tasks, with incident terms mapped to investigation actions.
 - Updated `rules.high_priority_senders` to support `email` + optional `name_regex` entries, enabling per-sender display-name matching (e.g., only `via RT` variants).
 - Updated ingestion to persist sender display names (`"Name <email>"`) when available and backfill existing rows on re-ingest, enabling reliable name-regex filtering like `via RT`.
+- Added debug visibility when high-priority thread capping drops threads and filtered placeholder-style LLM outputs like `<summary>` / `<todo ...>`.

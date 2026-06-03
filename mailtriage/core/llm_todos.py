@@ -70,6 +70,9 @@ def run_llm_todo_sync(
     today_local = window_end_utc.astimezone(ZoneInfo(timezone)).strftime("%Y-%m-%d")
 
     kept_lines, moved_lines, moved_ids = _purge_checked_items(running_lines)
+    kept_lines, removed_placeholders = _cleanup_placeholder_entries(kept_lines)
+    if removed_placeholders:
+        _debug(f"todo sync removed placeholder entries: count={removed_placeholders}")
     if moved_lines:
         _append_done_lines(done_root=done_root, date_label=today_local, lines=moved_lines)
         done_ids |= moved_ids
@@ -199,11 +202,34 @@ def _extract_thread_tasks(
         + f"messages={len(rows)} threads={len(grouped)}"
     )
 
+    # Prioritize most recent active threads first instead of lexical thread-id order.
+    all_thread_ids = [
+        tid
+        for tid, _ in sorted(
+            grouped.items(),
+            key=lambda item: (
+                max(str(m.get("date_utc") or "") for m in item[1]),
+                item[0],
+            ),
+            reverse=True,
+        )
+    ]
+    selected_thread_ids = all_thread_ids[: cfg.max_threads]
+    if len(all_thread_ids) > len(selected_thread_ids):
+        _debug(
+            "todo sync thread cap applied: "
+            + f"selected={len(selected_thread_ids)} skipped={len(all_thread_ids) - len(selected_thread_ids)} max_threads={cfg.max_threads}"
+        )
+
     out: list[dict[str, str]] = []
-    for tid in sorted(grouped.keys())[: cfg.max_threads]:
+    for tid in selected_thread_ids:
         raw_msgs = grouped[tid]
         msgs = _dedupe_thread_messages(raw_msgs)
         latest_subject = _latest_subject(msgs)
+        _debug(
+            "todo sync selected thread: "
+            + f"thread={tid[:10]} subject={latest_subject!r}"
+        )
         prompt = _build_prompt(
             msgs=msgs,
             max_tasks=cfg.max_tasks_per_thread,
@@ -345,6 +371,7 @@ def _build_prompt(
             "Return strict JSON object: {\"todos\": [\"entry\", ...]}",
             "Return JSON only. No prose. No markdown. No analysis.",
             "Each entry must use this format: '<summary>. Action: <todo or No action required>'.",
+            "Do not output literal placeholders like '<summary>' or '<todo ...>'; use concrete text.",
             "If no action is required, still return an entry with 'Action: No action required'.",
             "Never use placeholder text like '...' or 'TBD'.",
             f"Limit to {max_tasks} tasks.",
@@ -552,11 +579,30 @@ def _normalize_task(value: str) -> str:
     low = s.lower().strip(" .")
     if low in {"...", "…", "tbd", "todo", "task", "n/a", "na"}:
         return ""
+    if "<summary>" in low or "<todo" in low:
+        return ""
     if set(s) <= {".", " ", "-"}:
         return ""
     if len(low) < 4:
         return ""
     return s
+
+
+def _cleanup_placeholder_entries(lines: list[str]) -> tuple[list[str], int]:
+    kept: list[str] = []
+    removed = 0
+    for ln in lines:
+        m = _TASK_ID_RE.search(ln)
+        if not m:
+            kept.append(ln)
+            continue
+        task_part = _TASK_ID_RE.sub("", ln)
+        task_part = re.sub(r"^\s*[-*]\s+", "", task_part).strip()
+        if not _normalize_task(task_part):
+            removed += 1
+            continue
+        kept.append(ln)
+    return kept, removed
 
 
 def _item_id(thread_id: str, task: str) -> str:
