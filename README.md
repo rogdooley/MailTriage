@@ -64,6 +64,8 @@ accounts:
 rules:
   high_priority_senders:
     - boss@example.com
+    - email: rt@example.com
+      name_regex: "\\bvia\\b" # optional display-name regex for this sender only
   collapse_automated: true
   suppress:
     senders: []
@@ -196,6 +198,9 @@ or
 uv run mailtriage run --config config.yml --date 2025-01-15
 ```
 
+`mailtriage run` and `mailtriage watch` load `.env` from the current working directory
+automatically (without overriding variables already exported in your shell).
+
 ## LLM Todo Extraction (Optional)
 
 MailTriage can extract actionable tasks from messages sent by `rules.high_priority_senders`
@@ -211,6 +216,11 @@ MAILTRIAGE_LITELLM_API_KEY=
 MAILTRIAGE_LITELLM_TIMEOUT_SEC=20
 MAILTRIAGE_LITELLM_MAX_THREADS=20
 MAILTRIAGE_LITELLM_MAX_TASKS_PER_THREAD=5
+MAILTRIAGE_LITELLM_MAX_MESSAGES_PER_THREAD=3
+MAILTRIAGE_LITELLM_MAX_CHARS_PER_MESSAGE=450
+MAILTRIAGE_LITELLM_MAX_OUTPUT_TOKENS=280
+MAILTRIAGE_LITELLM_RETRIES=1
+MAILTRIAGE_LITELLM_RETRY_BACKOFF_SEC=1.2
 
 # Optional TLS controls (enterprise cert chains)
 MAILTRIAGE_LITELLM_CA_BUNDLE=/path/to/company-ca.pem
@@ -221,12 +231,24 @@ If your LiteLLM endpoint uses an internal/self-signed certificate chain, set
 `MAILTRIAGE_LITELLM_CA_BUNDLE` to your org CA bundle file. Only use
 `MAILTRIAGE_LITELLM_INSECURE_SKIP_VERIFY=1` as a temporary fallback.
 
+If you see frequent timeout errors, increase `MAILTRIAGE_LITELLM_TIMEOUT_SEC`,
+reduce `MAILTRIAGE_LITELLM_MAX_THREADS`, reduce `MAILTRIAGE_LITELLM_MAX_MESSAGES_PER_THREAD`,
+and/or lower `MAILTRIAGE_LITELLM_MAX_CHARS_PER_MESSAGE`.
+
 Behavior on each `mailtriage run` window:
 
 - Reads `<MAILTRIAGE_TODO_ROOT>/running.md` (creates it if missing)
-- Moves checked items (`- [x]` or `- [X]`) to `<MAILTRIAGE_TODO_ROOT>/done/YYYY/MM/DD.md`
+- Moves done-marked items (`- DONE: ...` or `- done: ...`) to `<MAILTRIAGE_TODO_ROOT>/done/YYYY/MM/DD.md`
 - Preserves the original markdown line content when moving items (notes/tags stay intact)
-- Appends newly extracted unchecked tasks grouped under `## YYYY-MM-DD` in `running.md`
+- Appends LLM-generated summary+action entries as plain bullets (no checkbox) grouped under `## YYYY-MM-DD` in `running.md`
+
+Entry style:
+
+- `<summary>. Action: <todo>`
+- `<summary>. Action: No action required`
+
+If the model returns no parseable todo entries for a thread, MailTriage adds a
+subject-based fallback entry so subject-only messages are still captured.
 
 If any required LiteLLM env var is missing, this feature is skipped and normal report generation continues.
 

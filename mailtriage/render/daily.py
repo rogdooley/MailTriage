@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from mailtriage.core.hp_rules import sender_matches_high_priority
+
 # ----------------------------
 # DB helpers
 # ----------------------------
@@ -154,9 +156,8 @@ def classify_message(msg: dict[str, Any], rules) -> str:
     if _contains_any(getattr(rules.arrival_only, "subjects", []), subject_l):
         return "arrival_only"
 
-    # high priority (email match, not full "Name <email>")
-    hp = {s.lower() for s in getattr(rules, "high_priority_senders", [])}
-    if sender_email in hp:
+    # high priority (email + optional display-name regex)
+    if sender_matches_high_priority(sender_raw, getattr(rules, "high_priority_senders", [])):
         return "high_priority"
 
     return "normal"
@@ -259,14 +260,12 @@ def build_high_priority_groups(
     """
     Group high-priority messages by sender_email. Suppress groups already replied to.
     """
-    hp = {s.lower() for s in getattr(rules, "high_priority_senders", [])}
-
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for msg in messages:
         sender_raw = msg.get("sender") or ""
         sender_email = normalize_sender_email(sender_raw)
-        if sender_email in hp:
+        if sender_matches_high_priority(sender_raw, getattr(rules, "high_priority_senders", [])):
             grouped[sender_email].append(msg)
 
     result: dict[str, dict[str, Any]] = {}
@@ -510,11 +509,13 @@ def render_window(
     threads = load_threads_for_messages(db, messages)
 
     # Determine which threads are high-priority (thread-wide)
-    hp = {s.lower() for s in getattr(rules, "high_priority_senders", [])}
     high_priority_thread_ids: set[str] = {
         str(m["thread_id"])
         for m in messages
-        if m.get("thread_id") and normalize_sender_email(m.get("sender") or "") in hp
+        if m.get("thread_id")
+        and sender_matches_high_priority(
+            m.get("sender") or "", getattr(rules, "high_priority_senders", [])
+        )
     }
 
     high_priority_msgs: list[dict[str, Any]] = []

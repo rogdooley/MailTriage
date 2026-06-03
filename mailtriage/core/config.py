@@ -63,8 +63,14 @@ class ArrivalOnlyRules:
 
 
 @dataclass(frozen=True)
+class HighPrioritySenderRule:
+    email: str
+    name_regex: str | None = None
+
+
+@dataclass(frozen=True)
 class RulesConfig:
-    high_priority_senders: List[str] = field(default_factory=list)
+    high_priority_senders: List[HighPrioritySenderRule] = field(default_factory=list)
     collapse_automated: bool = True
     suppress: SuppressRules = field(default_factory=SuppressRules)
     arrival_only: ArrivalOnlyRules = field(default_factory=ArrivalOnlyRules)
@@ -285,7 +291,12 @@ def load_config(path: Path) -> AppConfig:
         raise ConfigError("rules must be a mapping")
     _reject_unknown(
         rules_raw,
-        {"high_priority_senders", "collapse_automated", "suppress", "arrival_only"},
+        {
+            "high_priority_senders",
+            "collapse_automated",
+            "suppress",
+            "arrival_only",
+        },
         "rules",
     )
 
@@ -295,10 +306,38 @@ def load_config(path: Path) -> AppConfig:
     _reject_unknown(arrival_raw, {"senders", "subjects"}, "rules.arrival_only")
 
     hp = rules_raw.get("high_priority_senders") or []
-    if not isinstance(hp, list) or not all(isinstance(x, str) for x in hp):
-        raise ConfigError("rules.high_priority_senders must be a list of strings")
+    if not isinstance(hp, list):
+        raise ConfigError(
+            "rules.high_priority_senders must be a list of strings or mappings"
+        )
+    hp_rules: list[HighPrioritySenderRule] = []
+    for item in hp:
+        if isinstance(item, str):
+            email = item.strip().lower()
+            if not email:
+                raise ConfigError("rules.high_priority_senders entries must be non-empty")
+            hp_rules.append(HighPrioritySenderRule(email=email, name_regex=None))
+            continue
+        if isinstance(item, dict):
+            _reject_unknown(item, {"email", "name_regex"}, "rules.high_priority_senders[]")
+            email = str(_require(item, "email")).strip().lower()
+            if not email:
+                raise ConfigError("rules.high_priority_senders[].email must be non-empty")
+            name_regex_raw = item.get("name_regex")
+            name_regex = str(name_regex_raw).strip() if name_regex_raw is not None else None
+            hp_rules.append(
+                HighPrioritySenderRule(
+                    email=email,
+                    name_regex=name_regex or None,
+                )
+            )
+            continue
+        raise ConfigError(
+            "rules.high_priority_senders entries must be either string or mapping"
+        )
+
     rules_cfg = RulesConfig(
-        high_priority_senders=[str(x) for x in hp],
+        high_priority_senders=hp_rules,
         collapse_automated=bool(rules_raw.get("collapse_automated", True)),
         suppress=SuppressRules(
             senders=[str(x) for x in suppress_raw.get("senders", [])],

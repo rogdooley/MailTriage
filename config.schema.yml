@@ -18,7 +18,10 @@ accounts:
       reference: string # provider-specific ID
 
 rules:
-  high_priority_senders: [string]
+  high_priority_senders:
+    - string
+    - email: string
+      name_regex: string # optional regex against display name in From:
   collapse_automated: true
 
   suppress:

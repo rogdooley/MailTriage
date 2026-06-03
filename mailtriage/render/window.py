@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from mailtriage.core.hp_rules import sender_matches_high_priority
 from mailtriage.render.md_to_html import write_report_html
 
 # ----------------------------------------------------------------------
@@ -42,6 +43,52 @@ def load_messages_for_window(
     return rows
 
 
+_RT_EMPTY_MARKERS = {
+    "this transaction appears to have no content",
+}
+
+
+def _norm_text(value: object) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _looks_empty_rt_copy(msg: dict) -> bool:
+    return _norm_text(msg.get("extracted_new_text")) in _RT_EMPTY_MARKERS
+
+
+def _message_quality(msg: dict) -> tuple[int, int]:
+    subject = _norm_text(msg.get("subject"))
+    text = _norm_text(msg.get("extracted_new_text"))
+    score = 0
+    if _looks_empty_rt_copy(msg):
+        score -= 100
+    if text:
+        score += min(len(text), 600)
+    if subject and text and subject in text:
+        score += 80
+    return score, len(text)
+
+
+def _collapse_duplicate_copies(messages: list[dict]) -> list[dict]:
+    grouped: dict[tuple[str, str, str, str], list[tuple[int, dict]]] = defaultdict(list)
+    for idx, m in enumerate(messages):
+        key = (
+            str(m.get("thread_id") or ""),
+            _norm_text(m.get("sender")),
+            _norm_text(m.get("subject")),
+            str(m.get("date_utc") or ""),
+        )
+        grouped[key].append((idx, m))
+
+    kept: list[tuple[int, dict]] = []
+    for entries in grouped.values():
+        best_idx, best_msg = max(entries, key=lambda item: (_message_quality(item[1]), -item[0]))
+        kept.append((best_idx, best_msg))
+
+    kept.sort(key=lambda item: item[0])
+    return [m for _, m in kept]
+
+
 def load_threads(db, messages: list[dict]) -> dict[str, dict]:
     tids = {m["thread_id"] for m in messages if m.get("thread_id")}
     if not tids:
@@ -59,10 +106,6 @@ def load_threads(db, messages: list[dict]) -> dict[str, dict]:
 # ----------------------------------------------------------------------
 # Classification
 # ----------------------------------------------------------------------
-
-
-def _norm_email(addr: str) -> str:
-    return addr.strip().lower()
 
 
 def classify(msg: dict, rules) -> str:
@@ -83,9 +126,8 @@ def classify(msg: dict, rules) -> str:
         if p.lower() in subject:
             return "arrival_only"
 
-    for hp in rules.high_priority_senders:
-        if _norm_email(hp) == _norm_email(sender):
-            return "high_priority"
+    if sender_matches_high_priority(msg.get("sender") or "", rules.high_priority_senders):
+        return "high_priority"
 
     return "normal"
 
@@ -104,16 +146,14 @@ def _parse_sender(sender: str) -> tuple[str | None, str]:
 
 
 def build_high_priority_groups(messages: list[dict], rules) -> dict[str, dict]:
-    hp_set = {_norm_email(x) for x in rules.high_priority_senders}
-
     grouped: dict[str, list[dict]] = defaultdict(list)
 
     for m in messages:
         if not m.get("inbound"):
             continue
 
-        _, email = _parse_sender(m["sender"])
-        if email in hp_set:
+        if sender_matches_high_priority(m.get("sender") or "", rules.high_priority_senders):
+            _, email = _parse_sender(m["sender"])
             grouped[email].append(m)
 
     out: dict[str, dict] = {}
@@ -214,6 +254,7 @@ def render_window(
         window_start_utc=window_start_utc,
         window_end_utc=window_end_utc,
     )
+    messages = _collapse_duplicate_copies(messages)
     threads = load_threads(db, messages)
 
     hp_msgs: list[dict] = []

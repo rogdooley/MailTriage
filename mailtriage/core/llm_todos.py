@@ -9,15 +9,19 @@ from pathlib import Path
 import re
 import ssl
 import sys
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from mailtriage.core.hp_rules import sender_matches_high_priority
+
 
 _TASK_ID_RE = re.compile(r"<!--\s*mailtriage:id=([a-f0-9]{10,64})\s*-->")
-_CHECKED_RE = re.compile(r"^\s*[-*]\s+\[(x|X)\]\s+")
+_DONE_RE = re.compile(r"^\s*[-*]\s+(?:\[(x|X)\]\s+|DONE:\s+|done:\s+)")
 _DATE_H2_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\s*$")
+_TOP_LEVEL_BULLET_RE = re.compile(r"^[-*]\s+")
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,11 @@ class TodoLlmConfig:
     timeout_sec: int
     max_threads: int
     max_tasks_per_thread: int
+    max_messages_per_thread: int
+    max_chars_per_message: int
+    max_output_tokens: int
+    retries: int
+    retry_backoff_sec: float
     ca_bundle: str | None
     insecure_skip_verify: bool
 
@@ -39,7 +48,7 @@ def run_llm_todo_sync(
     window_start_utc: datetime,
     window_end_utc: datetime,
     timezone: str,
-    high_priority_senders: list[str],
+    high_priority_senders: list[object],
 ) -> None:
     cfg = _load_from_env()
     if cfg is None:
@@ -48,7 +57,7 @@ def run_llm_todo_sync(
 
     _debug(
         "todo sync enabled: "
-        + f"root={cfg.todo_root} model={cfg.model} base={cfg.api_base}"
+        + f"root={cfg.todo_root} model={cfg.model} base={cfg.api_base} timeout={cfg.timeout_sec}s retries={cfg.retries}"
     )
 
     running_path = cfg.todo_root / "running.md"
@@ -84,10 +93,12 @@ def run_llm_todo_sync(
         item_id = _item_id(item["thread_id"], item["task"])
         if item_id in done_ids or item_id in active_ids:
             continue
-        task = item["task"].strip()
+        task = _normalize_task(item["task"])
         if not task:
             continue
-        new_lines.append(f"- [ ] {task} <!-- mailtriage:id={item_id} -->")
+        subject = str(item.get("subject") or "").strip()
+        subject_prefix = f"({subject}) " if subject else ""
+        new_lines.append(f"- {subject_prefix}{task} <!-- mailtriage:id={item_id} -->")
         active_ids.add(item_id)
 
     updated_running = _append_to_date_section(kept_lines, today_local, new_lines)
@@ -114,17 +125,26 @@ def _load_from_env() -> TodoLlmConfig | None:
         api_base=api_base.rstrip("/"),
         model=model,
         api_key=(os.environ.get("MAILTRIAGE_LITELLM_API_KEY") or "").strip() or None,
-        timeout_sec=max(5, int(os.environ.get("MAILTRIAGE_LITELLM_TIMEOUT_SEC", "20") or "20")),
+        timeout_sec=max(5, _env_int("MAILTRIAGE_LITELLM_TIMEOUT_SEC", 20)),
         max_threads=max(
             1,
-            int(os.environ.get("MAILTRIAGE_LITELLM_MAX_THREADS", "20") or "20"),
+            _env_int("MAILTRIAGE_LITELLM_MAX_THREADS", 20),
         ),
         max_tasks_per_thread=max(
             1,
-            int(
-                os.environ.get("MAILTRIAGE_LITELLM_MAX_TASKS_PER_THREAD", "5") or "5"
-            ),
+            _env_int("MAILTRIAGE_LITELLM_MAX_TASKS_PER_THREAD", 5),
         ),
+        max_messages_per_thread=max(
+            1,
+            _env_int("MAILTRIAGE_LITELLM_MAX_MESSAGES_PER_THREAD", 3),
+        ),
+        max_chars_per_message=max(
+            120,
+            _env_int("MAILTRIAGE_LITELLM_MAX_CHARS_PER_MESSAGE", 450),
+        ),
+        max_output_tokens=max(64, _env_int("MAILTRIAGE_LITELLM_MAX_OUTPUT_TOKENS", 280)),
+        retries=max(0, _env_int("MAILTRIAGE_LITELLM_RETRIES", 1)),
+        retry_backoff_sec=max(0.1, _env_float("MAILTRIAGE_LITELLM_RETRY_BACKOFF_SEC", 1.2)),
         ca_bundle=(os.environ.get("MAILTRIAGE_LITELLM_CA_BUNDLE") or "").strip() or None,
         insecure_skip_verify=_truthy(
             os.environ.get("MAILTRIAGE_LITELLM_INSECURE_SKIP_VERIFY")
@@ -142,11 +162,10 @@ def _extract_thread_tasks(
     db,
     window_start_utc: datetime,
     window_end_utc: datetime,
-    hp_senders: list[str],
+    hp_senders: list[object],
     cfg: TodoLlmConfig,
 ) -> list[dict[str, str]]:
-    hp = {x.strip().lower() for x in hp_senders if x and x.strip()}
-    if not hp:
+    if not hp_senders:
         return []
 
     rows = _query_all(
@@ -167,8 +186,8 @@ def _extract_thread_tasks(
 
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        sender = str(row.get("sender") or "").strip().lower()
-        if sender not in hp:
+        sender = str(row.get("sender") or "")
+        if not sender_matches_high_priority(sender, hp_senders):
             continue
         tid = str(row.get("thread_id") or "")
         if not tid:
@@ -182,32 +201,139 @@ def _extract_thread_tasks(
 
     out: list[dict[str, str]] = []
     for tid in sorted(grouped.keys())[: cfg.max_threads]:
-        msgs = grouped[tid]
-        prompt = _build_prompt(msgs=msgs, max_tasks=cfg.max_tasks_per_thread)
+        raw_msgs = grouped[tid]
+        msgs = _dedupe_thread_messages(raw_msgs)
+        latest_subject = _latest_subject(msgs)
+        prompt = _build_prompt(
+            msgs=msgs,
+            max_tasks=cfg.max_tasks_per_thread,
+            max_messages=cfg.max_messages_per_thread,
+            max_chars_per_message=cfg.max_chars_per_message,
+        )
         tasks = _call_litellm(prompt=prompt, cfg=cfg)
+        if not tasks:
+            fallback = _fallback_entry_from_subject(latest_subject)
+            if fallback:
+                tasks = [fallback]
+                _debug(
+                    "todo sync using subject fallback entry: "
+                    + f"thread={tid[:10]} subject={latest_subject!r}"
+                )
         _debug(
             "todo sync llm thread result: "
-            + f"thread={tid[:10]} msgs={len(msgs)} tasks={len(tasks)}"
+            + f"thread={tid[:10]} raw_msgs={len(raw_msgs)} unique_msgs={len(msgs)} tasks={len(tasks)}"
         )
         for task in tasks[: cfg.max_tasks_per_thread]:
-            out.append({"thread_id": tid, "task": task})
+            out.append({"thread_id": tid, "task": task, "subject": latest_subject})
     return out
 
 
-def _build_prompt(*, msgs: list[dict[str, Any]], max_tasks: int) -> str:
+def _latest_subject(msgs: list[dict[str, Any]]) -> str:
+    if not msgs:
+        return ""
+    subj = str(msgs[-1].get("subject") or "").strip()
+    return re.sub(r"\s+", " ", subj)
+
+
+def _dedupe_thread_messages(msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse repeated copies of the same thread update before LLM calls."""
+    if not msgs:
+        return msgs
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for m in msgs:
+        key = (
+            re.sub(r"\s+", " ", str(m.get("subject") or "").strip().lower()),
+            str(m.get("date_utc") or ""),
+        )
+        grouped.setdefault(key, []).append(m)
+
+    out: list[dict[str, Any]] = []
+    for key in sorted(grouped.keys(), key=lambda k: k[1]):
+        candidates = grouped[key]
+        best = max(candidates, key=_message_quality)
+        out.append(best)
+    return out
+
+
+def _message_signature(m: dict[str, Any]) -> str:
+    subject = re.sub(r"\s+", " ", str(m.get("subject") or "").strip().lower())
+    body = re.sub(
+        r"\s+", " ", str(m.get("extracted_new_text") or "").strip().lower()
+    )
+    return hashlib.sha256((subject + "\n" + body).encode("utf-8")).hexdigest()
+
+
+def _message_quality(m: dict[str, Any]) -> tuple[int, int]:
+    subject = re.sub(r"\s+", " ", str(m.get("subject") or "").strip().lower())
+    body = re.sub(r"\s+", " ", str(m.get("extracted_new_text") or "").strip().lower())
+    score = 0
+    if body:
+        score += min(len(body), 600)
+    if body == "this transaction appears to have no content":
+        score -= 100
+    if subject and body and subject in body:
+        score += 80
+    return score, len(body)
+
+
+def _fallback_entry_from_subject(subject: str) -> str:
+    subj = re.sub(r"\s+", " ", (subject or "").strip())
+    if not subj:
+        return ""
+
+    low = subj.lower()
+    incident_terms = (
+        "fail",
+        "failed",
+        "failure",
+        "error",
+        "outage",
+        "down",
+        "incident",
+        "instability",
+        "unstable",
+        "problem",
+        "issue",
+        "degraded",
+        "urgent",
+        "alert",
+    )
+    if any(term in low for term in incident_terms):
+        return "Incident reported. Action: Investigate and resolve the issue"
+
+    return "Subject-only email. Action: Review and decide if follow-up is needed"
+
+
+def _build_prompt(
+    *,
+    msgs: list[dict[str, Any]],
+    max_tasks: int,
+    max_messages: int,
+    max_chars_per_message: int,
+) -> str:
     snippets: list[str] = []
-    for m in msgs[-6:]:
+    for m in msgs[-max_messages:]:
         when = str(m.get("date_utc") or "")
         subject = str(m.get("subject") or "").strip()
-        text = str(m.get("extracted_new_text") or "").strip()
-        text = re.sub(r"\s+", " ", text)
-        text = text[:900]
+        body_text = str(m.get("extracted_new_text") or "").strip()
+        body_text = re.sub(r"\s+", " ", body_text)
+
+        combined = ""
+        if subject and body_text:
+            combined = f"Subject: {subject}. Body: {body_text}"
+        elif body_text:
+            combined = body_text
+        elif subject:
+            combined = f"(no body excerpt; use subject) {subject}"
+        combined = combined[:max_chars_per_message]
+
         snippets.append(
             "\n".join(
                 [
                     f"Timestamp: {when}",
                     f"Subject: {subject}",
-                    f"Message: {text}",
+                    f"Message: {combined}",
                 ]
             )
         )
@@ -215,12 +341,14 @@ def _build_prompt(*, msgs: list[dict[str, Any]], max_tasks: int) -> str:
     joined = "\n\n---\n\n".join(snippets)
     return "\n".join(
         [
-            "Extract actionable todo items from these emails.",
-            "Only include tasks requiring work by the recipient.",
-            "Return strict JSON object: {\"todos\": [\"task\", ...]}",
-            "Do not include markdown.",
+            "Summarize each email thread and create todo entries.",
+            "Return strict JSON object: {\"todos\": [\"entry\", ...]}",
+            "Return JSON only. No prose. No markdown. No analysis.",
+            "Each entry must use this format: '<summary>. Action: <todo or No action required>'.",
+            "If no action is required, still return an entry with 'Action: No action required'.",
+            "Never use placeholder text like '...' or 'TBD'.",
             f"Limit to {max_tasks} tasks.",
-            "If there are no actionable items, return {\"todos\": []}.",
+            "Always return at least one entry when emails are provided.",
             "",
             joined,
         ]
@@ -234,11 +362,18 @@ def _call_litellm(*, prompt: str, cfg: TodoLlmConfig) -> list[str]:
         "messages": [
             {
                 "role": "system",
-                "content": "You extract concise, actionable todo items from work email.",
+                "content": (
+                    "You summarize work email and generate concise todo entries. "
+                    "Output valid JSON only using schema {\"todos\": [\"...\"]}. "
+                    "Do not include reasoning or markdown. "
+                    "Every entry must include an Action clause."
+                ),
             },
             {"role": "user", "content": prompt},
         ],
         "temperature": 0,
+        "max_tokens": cfg.max_output_tokens,
+        "response_format": {"type": "json_object"},
     }
 
     body = json.dumps(payload).encode("utf-8")
@@ -248,29 +383,54 @@ def _call_litellm(*, prompt: str, cfg: TodoLlmConfig) -> list[str]:
 
     req = Request(url=url, data=body, headers=headers, method="POST")
     ssl_context = _build_ssl_context(cfg)
-    try:
-        _debug(f"todo sync calling litellm: url={url} model={cfg.model}")
-        with urlopen(req, timeout=cfg.timeout_sec, context=ssl_context) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except HTTPError as e:
-        _debug(f"todo sync litellm http error: status={e.code}")
-        return []
-    except URLError as e:
-        _debug(f"todo sync litellm url error: reason={e.reason}")
-        return []
-    except TimeoutError:
-        _debug("todo sync litellm timeout")
-        return []
+    attempts = cfg.retries + 1
+    raw = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            _debug(
+                f"todo sync calling litellm: url={url} model={cfg.model} attempt={attempt}/{attempts}"
+            )
+            with urlopen(req, timeout=cfg.timeout_sec, context=ssl_context) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            break
+        except HTTPError as e:
+            _debug(f"todo sync litellm http error: status={e.code} attempt={attempt}/{attempts}")
+            if attempt < attempts and e.code in {408, 429, 500, 502, 503, 504}:
+                time.sleep(cfg.retry_backoff_sec * attempt)
+                continue
+            return []
+        except URLError as e:
+            _debug(f"todo sync litellm url error: reason={e.reason} attempt={attempt}/{attempts}")
+            if attempt < attempts:
+                time.sleep(cfg.retry_backoff_sec * attempt)
+                continue
+            return []
+        except TimeoutError:
+            _debug(f"todo sync litellm timeout: attempt={attempt}/{attempts}")
+            if attempt < attempts:
+                time.sleep(cfg.retry_backoff_sec * attempt)
+                continue
+            return []
 
     try:
         doc = json.loads(raw)
-        content = str(doc["choices"][0]["message"]["content"])
+        msg = doc["choices"][0]["message"]
+        content = _coerce_content_to_text(msg.get("content"))
     except Exception:
         _debug("todo sync litellm response parse error: missing choices[0].message.content")
         return []
 
     parsed = _extract_json(content)
     if not parsed:
+        reasoning = _extract_reasoning_text(doc)
+        if reasoning:
+            parsed = _extract_json(reasoning)
+    if not parsed:
+        if content:
+            _debug(f"todo sync content sample: {content[:220]!r}")
+        reasoning = _extract_reasoning_text(doc)
+        if reasoning:
+            _debug(f"todo sync reasoning sample: {reasoning[:220]!r}")
         _debug("todo sync litellm content parse produced no todos")
         return []
     out: list[str] = []
@@ -282,16 +442,20 @@ def _call_litellm(*, prompt: str, cfg: TodoLlmConfig) -> list[str]:
 
 
 def _extract_json(content: str) -> list[str]:
-    content = content.strip()
+    content = (content or "").strip()
     for candidate in _json_candidates(content):
         try:
             data = json.loads(candidate)
         except Exception:
             continue
-        if isinstance(data, dict) and isinstance(data.get("todos"), list):
-            return [str(x) for x in data["todos"] if x]
+        if isinstance(data, dict):
+            items = _extract_items_from_dict(data)
+            if items:
+                return items
         if isinstance(data, list):
-            return [str(x) for x in data if x]
+            items = _extract_items_from_list(data)
+            if items:
+                return items
     return []
 
 
@@ -300,7 +464,99 @@ def _json_candidates(content: str) -> list[str]:
     m = re.search(r"```json\s*(.*?)\s*```", content, flags=re.S | re.I)
     if m:
         out.append(m.group(1).strip())
+    for m2 in re.finditer(r"\{[\s\S]*?\}", content):
+        cand = m2.group(0)
+        if '"todos"' in cand:
+            out.append(cand)
     return out
+
+
+def _extract_reasoning_text(doc: dict[str, Any]) -> str:
+    try:
+        msg = doc["choices"][0]["message"]
+    except Exception:
+        return ""
+    if isinstance(msg.get("reasoning_content"), str):
+        return msg["reasoning_content"]
+    ps = msg.get("provider_specific_fields")
+    if isinstance(ps, dict):
+        for k in ("reasoning_content", "reasoning"):
+            if isinstance(ps.get(k), str):
+                return ps[k]
+    return ""
+
+
+def _coerce_content_to_text(content: object) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                txt = item.get("text")
+                if isinstance(txt, str):
+                    parts.append(txt)
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        txt = content.get("text") if isinstance(content, dict) else None
+        if isinstance(txt, str):
+            return txt
+    return str(content)
+
+
+def _extract_items_from_dict(data: dict[str, Any]) -> list[str]:
+    for key in ("todos", "tasks", "items", "entries"):
+        val = data.get(key)
+        if isinstance(val, list):
+            items = _extract_items_from_list(val)
+            if items:
+                return items
+    return []
+
+
+def _extract_items_from_list(items: list[Any]) -> list[str]:
+    out: list[str] = []
+    for x in items:
+        if isinstance(x, str):
+            s = _normalize_task(x)
+            if s:
+                out.append(s)
+            continue
+        if isinstance(x, dict):
+            text = None
+            for key in ("task", "todo", "text", "entry"):
+                if isinstance(x.get(key), str):
+                    text = x[key]
+                    break
+            if text is None and isinstance(x.get("summary"), str):
+                summary = x.get("summary", "").strip()
+                action = x.get("action") if isinstance(x.get("action"), str) else ""
+                text = f"{summary}. Action: {action}" if action else summary
+            s = _normalize_task(text or "")
+            if s:
+                out.append(s)
+    return out
+
+
+def _normalize_task(value: str) -> str:
+    s = re.sub(r"\s+", " ", (value or "").strip())
+    s = s.strip("-*")
+    s = s.strip()
+    if not s:
+        return ""
+    low = s.lower().strip(" .")
+    if low in {"...", "…", "tbd", "todo", "task", "n/a", "na"}:
+        return ""
+    if set(s) <= {".", " ", "-"}:
+        return ""
+    if len(low) < 4:
+        return ""
+    return s
 
 
 def _item_id(thread_id: str, task: str) -> str:
@@ -336,7 +592,7 @@ def _purge_checked_items(lines: list[str]) -> tuple[list[str], list[str], set[st
     i = 0
     while i < len(lines):
         ln = lines[i]
-        if _CHECKED_RE.match(ln):
+        if _DONE_RE.match(ln):
             moved.append(ln)
             m = _TASK_ID_RE.search(ln)
             if m:
@@ -344,9 +600,9 @@ def _purge_checked_items(lines: list[str]) -> tuple[list[str], list[str], set[st
             i += 1
             while i < len(lines):
                 nxt = lines[i]
-                if _CHECKED_RE.match(nxt):
+                if _DONE_RE.match(nxt):
                     break
-                if nxt.lstrip().startswith("- [") or _DATE_H2_RE.match(nxt):
+                if _TOP_LEVEL_BULLET_RE.match(nxt) or _DATE_H2_RE.match(nxt):
                     break
                 if nxt.startswith(" ") or nxt.startswith("\t"):
                     moved.append(nxt)
@@ -442,3 +698,25 @@ def _build_ssl_context(cfg: TodoLlmConfig) -> ssl.SSLContext | None:
         except Exception as e:
             _debug(f"todo sync invalid CA bundle '{cfg.ca_bundle}': {e}")
     return None
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        _debug(f"todo sync invalid int for {name}: {raw!r}; using default {default}")
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        _debug(f"todo sync invalid float for {name}: {raw!r}; using default {default}")
+        return default

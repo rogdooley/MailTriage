@@ -17,6 +17,7 @@ import yaml
 
 from mailtriage.cli import main as mailtriage_main
 from mailtriage.core.config import load_config
+from mailtriage.core.env import read_dotenv
 from mailtriage.core.notify import notify, open_file_in_browser, show_command_page
 from mailtriage.ingest.ingest import SecretProviderError
 
@@ -205,19 +206,6 @@ def _is_non_workday(day: date, holiday_set: set[date]) -> bool:
     if day.weekday() >= 5:
         return True
     return day in holiday_set
-
-
-def _read_dotenv(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    out: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        out[key.strip()] = value.strip().strip("'").strip('"')
-    return out
 
 
 def _resolve_download_url(

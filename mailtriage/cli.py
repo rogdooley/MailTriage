@@ -8,6 +8,7 @@ from pathlib import Path
 import os
 
 from mailtriage.core.config import load_config
+from mailtriage.core.env import load_dotenv_into_environ
 from mailtriage.core.db import Database
 from mailtriage.core.notify import notify
 from mailtriage.core.schema import ensure_schema_v1, verify_schema_hash
@@ -87,6 +88,11 @@ def _maybe_load_bw_session(*, output_root: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+
+    # Always load local dotenv defaults for CLI runs, while preserving explicitly
+    # exported environment values.
+    load_dotenv_into_environ(Path.cwd() / ".env")
+
     parser = build_parser()
     ns = parser.parse_args(argv)
 
