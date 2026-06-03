@@ -14,6 +14,7 @@ from mailtriage.core.schema import ensure_schema_v1, verify_schema_hash
 from mailtriage.core.timewindow import compute_windows
 from mailtriage.ingest.ingest import SecretProviderError
 from mailtriage.ingest.ingest import ingest_account
+from mailtriage.core.llm_todos import run_llm_todo_sync
 from mailtriage.render.window import render_window
 from mailtriage.render.site import render_index
 from mailtriage.watch.notify_unreplied import UnrepliedRule as _UnrepliedRuleCfg
@@ -163,6 +164,18 @@ def main(argv: list[str] | None = None) -> int:
                     )
 
                 if ns.command == "run":
+                    try:
+                        run_llm_todo_sync(
+                            db=db,
+                            window_start_utc=start_dt,
+                            window_end_utc=end_dt,
+                            timezone=cfg.time.timezone,
+                            high_priority_senders=cfg.rules.high_priority_senders,
+                        )
+                    except Exception as e:
+                        if os.environ.get("MAILTRIAGE_DEBUG"):
+                            sys.stderr.write(f"[mailtriage] todo sync skipped: {e}\n")
+
                     render_window(
                         db=db,
                         window_start_utc=start_dt,

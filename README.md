@@ -196,6 +196,32 @@ or
 uv run mailtriage run --config config.yml --date 2025-01-15
 ```
 
+## LLM Todo Extraction (Optional)
+
+MailTriage can extract actionable tasks from messages sent by `rules.high_priority_senders`
+and maintain a markdown todo workflow.
+
+Set these in `.env`:
+
+```bash
+MAILTRIAGE_TODO_ROOT=/absolute/path/to/todos
+MAILTRIAGE_LITELLM_API_BASE=https://your-litellm-host/v1
+MAILTRIAGE_LITELLM_MODEL=your-model-name
+MAILTRIAGE_LITELLM_API_KEY=
+MAILTRIAGE_LITELLM_TIMEOUT_SEC=20
+MAILTRIAGE_LITELLM_MAX_THREADS=20
+MAILTRIAGE_LITELLM_MAX_TASKS_PER_THREAD=5
+```
+
+Behavior on each `mailtriage run` window:
+
+- Reads `<MAILTRIAGE_TODO_ROOT>/running.md` (creates it if missing)
+- Moves checked items (`- [x]` or `- [X]`) to `<MAILTRIAGE_TODO_ROOT>/done/YYYY/MM/DD.md`
+- Preserves the original markdown line content when moving items (notes/tags stay intact)
+- Appends newly extracted unchecked tasks grouped under `## YYYY-MM-DD` in `running.md`
+
+If any required LiteLLM env var is missing, this feature is skipped and normal report generation continues.
+
 ## Static Viewer (No Server)
 
 After generating reports, open:
