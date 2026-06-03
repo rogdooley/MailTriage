@@ -59,7 +59,7 @@ def run_llm_todo_sync(
         + f"root={cfg.todo_root} model={cfg.model} base={cfg.api_base} timeout={cfg.timeout_sec}s retries={cfg.retries}"
     )
 
-    running_path = cfg.todo_root / "running.md"
+    running_path = cfg.todo_root / "RunningToDos.md"
     done_root = cfg.todo_root / "done"
     state_path = cfg.todo_root / ".mailtriage_todo_state.json"
     cfg.todo_root.mkdir(parents=True, exist_ok=True)
