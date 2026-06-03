@@ -39,6 +39,10 @@ def sender_matches_high_priority(sender: str, hp_rules: Iterable[object]) -> boo
             continue
         if not patt:
             return True
+        if not name_l:
+            # Some pipelines persist only bare sender email (no display name).
+            # In that case, fall back to email-only matching for this rule.
+            return True
         try:
             if re.search(str(patt), name_l, flags=re.IGNORECASE):
                 return True

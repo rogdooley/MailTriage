@@ -518,7 +518,7 @@ def insert_message(
 ) -> None:
     db.exec(
         """
-        INSERT OR IGNORE INTO messages (
+        INSERT INTO messages (
             message_id, account_id, folder, date_utc,
             sender,
             recipients_to, recipients_cc,
@@ -527,6 +527,12 @@ def insert_message(
             has_attachments, attachment_names,
             thread_id, created_at_utc
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        ON CONFLICT(message_id) DO UPDATE SET
+            sender = CASE
+                WHEN instr(messages.sender, '<') = 0 AND instr(excluded.sender, '<') > 0
+                THEN excluded.sender
+                ELSE messages.sender
+            END
         """,
         (
             message_id,
@@ -585,8 +591,13 @@ def ingest_account(
                 if not (window_start_utc <= ts < window_end_utc):
                     continue
 
-                sender, _sender_display = extract_sender(msg)
+                sender_email, sender_display = extract_sender(msg)
                 subject = decode_mime_header(msg.get("Subject"))
+
+                if sender_display:
+                    sender = f"{sender_display} <{sender_email}>"
+                else:
+                    sender = sender_email
 
                 to_addrs = [
                     a[1].lower() for a in getaddresses([msg.get("To", "")]) if a[1]
@@ -595,7 +606,7 @@ def ingest_account(
                     a[1].lower() for a in getaddresses([msg.get("Cc", "")]) if a[1]
                 ]
 
-                outbound = sender in {
+                outbound = sender_email in {
                     account_cfg.identity.primary_address.lower(),
                     *(a.lower() for a in account_cfg.identity.aliases),
                 }
