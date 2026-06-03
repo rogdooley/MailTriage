@@ -210,6 +210,7 @@ Set these in `.env`:
 
 ```bash
 MAILTRIAGE_TODO_ROOT=/absolute/path/to/todos
+MAILTRIAGE_RUNNING_PATH=/absolute/path/to/todos/RunningToDos.md
 MAILTRIAGE_LITELLM_API_BASE=https://your-litellm-host/v1
 MAILTRIAGE_LITELLM_MODEL=your-model-name
 MAILTRIAGE_LITELLM_API_KEY=
@@ -241,6 +242,7 @@ or run with `MAILTRIAGE_DEBUG=1` to see when thread capping is applied.
 Behavior on each `mailtriage run` window:
 
 - Reads `<MAILTRIAGE_TODO_ROOT>/running.md` (creates it if missing)
+- Reads running todo markdown from `MAILTRIAGE_RUNNING_PATH` if set, otherwise defaults to `<MAILTRIAGE_TODO_ROOT>/RunningToDos.md` (creates it if missing)
 - Moves done-marked items (`- DONE: ...` or `- done: ...`) to `<MAILTRIAGE_TODO_ROOT>/done/YYYY/MM/DD.md`
 - Preserves the original markdown line content when moving items (notes/tags stay intact)
 - Appends LLM-generated summary+action entries as plain bullets (no checkbox) grouped under `## YYYY-MM-DD` in `running.md`

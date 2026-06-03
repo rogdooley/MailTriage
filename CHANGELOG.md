@@ -19,3 +19,4 @@ All notable changes to this project are documented in this file.
 - Updated `rules.high_priority_senders` to support `email` + optional `name_regex` entries, enabling per-sender display-name matching (e.g., only `via RT` variants).
 - Updated ingestion to persist sender display names (`"Name <email>"`) when available and backfill existing rows on re-ingest, enabling reliable name-regex filtering like `via RT`.
 - Added debug visibility when high-priority thread capping drops threads and filtered placeholder-style LLM outputs like `<summary>` / `<todo ...>`.
+- Added configurable running todo markdown path via `MAILTRIAGE_RUNNING_PATH` (default remains `<MAILTRIAGE_TODO_ROOT>/RunningToDos.md`).

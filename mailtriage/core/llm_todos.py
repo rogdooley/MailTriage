@@ -26,6 +26,7 @@ _TOP_LEVEL_BULLET_RE = re.compile(r"^[-*]\s+")
 @dataclass(frozen=True)
 class TodoLlmConfig:
     todo_root: Path
+    running_path: Path
     api_base: str
     model: str
     api_key: str | None
@@ -59,10 +60,11 @@ def run_llm_todo_sync(
         + f"root={cfg.todo_root} model={cfg.model} base={cfg.api_base} timeout={cfg.timeout_sec}s retries={cfg.retries}"
     )
 
-    running_path = cfg.todo_root / "RunningToDos.md"
+    running_path = cfg.running_path
     done_root = cfg.todo_root / "done"
     state_path = cfg.todo_root / ".mailtriage_todo_state.json"
     cfg.todo_root.mkdir(parents=True, exist_ok=True)
+    running_path.parent.mkdir(parents=True, exist_ok=True)
 
     done_ids = _load_done_ids(state_path)
     running_lines = _read_lines(running_path)
@@ -128,8 +130,18 @@ def _load_from_env() -> TodoLlmConfig | None:
     if not todo_root or not api_base or not model:
         return None
 
+    todo_root_path = Path(todo_root).expanduser()
+    running_path_raw = (os.environ.get("MAILTRIAGE_RUNNING_PATH") or "").strip()
+    if running_path_raw:
+        running_path = Path(running_path_raw).expanduser()
+        if not running_path.is_absolute():
+            running_path = (todo_root_path / running_path).resolve()
+    else:
+        running_path = todo_root_path / "RunningToDos.md"
+
     return TodoLlmConfig(
-        todo_root=Path(todo_root).expanduser(),
+        todo_root=todo_root_path,
+        running_path=running_path,
         api_base=api_base.rstrip("/"),
         model=model,
         api_key=(os.environ.get("MAILTRIAGE_LITELLM_API_KEY") or "").strip() or None,
