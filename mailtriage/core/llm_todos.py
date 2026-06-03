@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import ssl
 import sys
 import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from mailtriage.core.hp_rules import sender_matches_high_priority
-
 
 _TASK_ID_RE = re.compile(r"<!--\s*mailtriage:id=([a-f0-9]{10,64})\s*-->")
 _DONE_RE = re.compile(r"^\s*[-*]\s+(?:\[(x|X)\]\s+|DONE:\s+|done:\s+)")
@@ -74,7 +73,9 @@ def run_llm_todo_sync(
     if removed_placeholders:
         _debug(f"todo sync removed placeholder entries: count={removed_placeholders}")
     if moved_lines:
-        _append_done_lines(done_root=done_root, date_label=today_local, lines=moved_lines)
+        _append_done_lines(
+            done_root=done_root, date_label=today_local, lines=moved_lines
+        )
         done_ids |= moved_ids
         _debug(
             "todo sync archived checked items: "
@@ -101,7 +102,9 @@ def run_llm_todo_sync(
             continue
         subject = str(item.get("subject") or "").strip()
         subject_prefix = f"({subject}) " if subject else ""
-        new_lines.append(f"- {subject_prefix}{task} <!-- mailtriage:id={item_id} -->")
+        new_lines.append(
+            f"- [ ] {subject_prefix}{task} <!-- mailtriage:id={item_id} -->"
+        )
         active_ids.add(item_id)
 
     updated_running = _append_to_date_section(kept_lines, today_local, new_lines)
@@ -113,7 +116,9 @@ def run_llm_todo_sync(
 
     if moved_ids:
         _save_done_ids(state_path, done_ids)
-        _debug(f"todo sync updated done id state: path={state_path} ids={len(done_ids)}")
+        _debug(
+            f"todo sync updated done id state: path={state_path} ids={len(done_ids)}"
+        )
 
 
 def _load_from_env() -> TodoLlmConfig | None:
@@ -145,10 +150,15 @@ def _load_from_env() -> TodoLlmConfig | None:
             120,
             _env_int("MAILTRIAGE_LITELLM_MAX_CHARS_PER_MESSAGE", 450),
         ),
-        max_output_tokens=max(64, _env_int("MAILTRIAGE_LITELLM_MAX_OUTPUT_TOKENS", 280)),
+        max_output_tokens=max(
+            64, _env_int("MAILTRIAGE_LITELLM_MAX_OUTPUT_TOKENS", 280)
+        ),
         retries=max(0, _env_int("MAILTRIAGE_LITELLM_RETRIES", 1)),
-        retry_backoff_sec=max(0.1, _env_float("MAILTRIAGE_LITELLM_RETRY_BACKOFF_SEC", 1.2)),
-        ca_bundle=(os.environ.get("MAILTRIAGE_LITELLM_CA_BUNDLE") or "").strip() or None,
+        retry_backoff_sec=max(
+            0.1, _env_float("MAILTRIAGE_LITELLM_RETRY_BACKOFF_SEC", 1.2)
+        ),
+        ca_bundle=(os.environ.get("MAILTRIAGE_LITELLM_CA_BUNDLE") or "").strip()
+        or None,
         insecure_skip_verify=_truthy(
             os.environ.get("MAILTRIAGE_LITELLM_INSECURE_SKIP_VERIFY")
         ),
@@ -284,9 +294,7 @@ def _dedupe_thread_messages(msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _message_signature(m: dict[str, Any]) -> str:
     subject = re.sub(r"\s+", " ", str(m.get("subject") or "").strip().lower())
-    body = re.sub(
-        r"\s+", " ", str(m.get("extracted_new_text") or "").strip().lower()
-    )
+    body = re.sub(r"\s+", " ", str(m.get("extracted_new_text") or "").strip().lower())
     return hashlib.sha256((subject + "\n" + body).encode("utf-8")).hexdigest()
 
 
@@ -368,7 +376,7 @@ def _build_prompt(
     return "\n".join(
         [
             "Summarize each email thread and create todo entries.",
-            "Return strict JSON object: {\"todos\": [\"entry\", ...]}",
+            'Return strict JSON object: {"todos": ["entry", ...]}',
             "Return JSON only. No prose. No markdown. No analysis.",
             "Each entry must use this format: '<summary>. Action: <todo or No action required>'.",
             "Do not output literal placeholders like '<summary>' or '<todo ...>'; use concrete text.",
@@ -391,7 +399,7 @@ def _call_litellm(*, prompt: str, cfg: TodoLlmConfig) -> list[str]:
                 "role": "system",
                 "content": (
                     "You summarize work email and generate concise todo entries. "
-                    "Output valid JSON only using schema {\"todos\": [\"...\"]}. "
+                    'Output valid JSON only using schema {"todos": ["..."]}. '
                     "Do not include reasoning or markdown. "
                     "Every entry must include an Action clause."
                 ),
@@ -421,13 +429,17 @@ def _call_litellm(*, prompt: str, cfg: TodoLlmConfig) -> list[str]:
                 raw = resp.read().decode("utf-8", errors="replace")
             break
         except HTTPError as e:
-            _debug(f"todo sync litellm http error: status={e.code} attempt={attempt}/{attempts}")
+            _debug(
+                f"todo sync litellm http error: status={e.code} attempt={attempt}/{attempts}"
+            )
             if attempt < attempts and e.code in {408, 429, 500, 502, 503, 504}:
                 time.sleep(cfg.retry_backoff_sec * attempt)
                 continue
             return []
         except URLError as e:
-            _debug(f"todo sync litellm url error: reason={e.reason} attempt={attempt}/{attempts}")
+            _debug(
+                f"todo sync litellm url error: reason={e.reason} attempt={attempt}/{attempts}"
+            )
             if attempt < attempts:
                 time.sleep(cfg.retry_backoff_sec * attempt)
                 continue
@@ -444,7 +456,9 @@ def _call_litellm(*, prompt: str, cfg: TodoLlmConfig) -> list[str]:
         msg = doc["choices"][0]["message"]
         content = _coerce_content_to_text(msg.get("content"))
     except Exception:
-        _debug("todo sync litellm response parse error: missing choices[0].message.content")
+        _debug(
+            "todo sync litellm response parse error: missing choices[0].message.content"
+        )
         return []
 
     parsed = _extract_json(content)
@@ -661,7 +675,9 @@ def _purge_checked_items(lines: list[str]) -> tuple[list[str], list[str], set[st
     return keep, moved, moved_ids
 
 
-def _append_to_date_section(lines: list[str], date_label: str, items: list[str]) -> list[str]:
+def _append_to_date_section(
+    lines: list[str], date_label: str, items: list[str]
+) -> list[str]:
     if not items:
         return lines
     out = list(lines)
@@ -734,7 +750,9 @@ def _truthy(value: str | None) -> bool:
 
 def _build_ssl_context(cfg: TodoLlmConfig) -> ssl.SSLContext | None:
     if cfg.insecure_skip_verify:
-        _debug("todo sync ssl verify disabled via MAILTRIAGE_LITELLM_INSECURE_SKIP_VERIFY")
+        _debug(
+            "todo sync ssl verify disabled via MAILTRIAGE_LITELLM_INSECURE_SKIP_VERIFY"
+        )
         return ssl._create_unverified_context()
     if cfg.ca_bundle:
         try:
