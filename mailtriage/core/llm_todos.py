@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
+import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -27,6 +29,8 @@ class TodoLlmConfig:
     timeout_sec: int
     max_threads: int
     max_tasks_per_thread: int
+    ca_bundle: str | None
+    insecure_skip_verify: bool
 
 
 def run_llm_todo_sync(
@@ -39,7 +43,13 @@ def run_llm_todo_sync(
 ) -> None:
     cfg = _load_from_env()
     if cfg is None:
+        _debug("todo sync disabled: missing MAILTRIAGE_TODO_ROOT/API_BASE/MODEL")
         return
+
+    _debug(
+        "todo sync enabled: "
+        + f"root={cfg.todo_root} model={cfg.model} base={cfg.api_base}"
+    )
 
     running_path = cfg.todo_root / "running.md"
     done_root = cfg.todo_root / "done"
@@ -54,6 +64,10 @@ def run_llm_todo_sync(
     if moved_lines:
         _append_done_lines(done_root=done_root, date_label=today_local, lines=moved_lines)
         done_ids |= moved_ids
+        _debug(
+            "todo sync archived checked items: "
+            + f"count={len(moved_lines)} done_date={today_local}"
+        )
 
     active_ids = _collect_ids(kept_lines)
     extracted = _extract_thread_tasks(
@@ -63,6 +77,7 @@ def run_llm_todo_sync(
         hp_senders=high_priority_senders,
         cfg=cfg,
     )
+    _debug(f"todo sync extracted tasks from llm: count={len(extracted)}")
 
     new_lines: list[str] = []
     for item in extracted:
@@ -77,9 +92,14 @@ def run_llm_todo_sync(
 
     updated_running = _append_to_date_section(kept_lines, today_local, new_lines)
     _write_lines(running_path, updated_running)
+    _debug(
+        "todo sync wrote running markdown: "
+        + f"path={running_path} added={len(new_lines)}"
+    )
 
     if moved_ids:
         _save_done_ids(state_path, done_ids)
+        _debug(f"todo sync updated done id state: path={state_path} ids={len(done_ids)}")
 
 
 def _load_from_env() -> TodoLlmConfig | None:
@@ -104,6 +124,10 @@ def _load_from_env() -> TodoLlmConfig | None:
             int(
                 os.environ.get("MAILTRIAGE_LITELLM_MAX_TASKS_PER_THREAD", "5") or "5"
             ),
+        ),
+        ca_bundle=(os.environ.get("MAILTRIAGE_LITELLM_CA_BUNDLE") or "").strip() or None,
+        insecure_skip_verify=_truthy(
+            os.environ.get("MAILTRIAGE_LITELLM_INSECURE_SKIP_VERIFY")
         ),
     )
 
@@ -151,11 +175,20 @@ def _extract_thread_tasks(
             continue
         grouped.setdefault(tid, []).append(row)
 
+    _debug(
+        "todo sync high-priority inbound candidates: "
+        + f"messages={len(rows)} threads={len(grouped)}"
+    )
+
     out: list[dict[str, str]] = []
     for tid in sorted(grouped.keys())[: cfg.max_threads]:
         msgs = grouped[tid]
         prompt = _build_prompt(msgs=msgs, max_tasks=cfg.max_tasks_per_thread)
         tasks = _call_litellm(prompt=prompt, cfg=cfg)
+        _debug(
+            "todo sync llm thread result: "
+            + f"thread={tid[:10]} msgs={len(msgs)} tasks={len(tasks)}"
+        )
         for task in tasks[: cfg.max_tasks_per_thread]:
             out.append({"thread_id": tid, "task": task})
     return out
@@ -214,20 +247,31 @@ def _call_litellm(*, prompt: str, cfg: TodoLlmConfig) -> list[str]:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
 
     req = Request(url=url, data=body, headers=headers, method="POST")
+    ssl_context = _build_ssl_context(cfg)
     try:
-        with urlopen(req, timeout=cfg.timeout_sec) as resp:
+        _debug(f"todo sync calling litellm: url={url} model={cfg.model}")
+        with urlopen(req, timeout=cfg.timeout_sec, context=ssl_context) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
-    except (HTTPError, URLError, TimeoutError):
+    except HTTPError as e:
+        _debug(f"todo sync litellm http error: status={e.code}")
+        return []
+    except URLError as e:
+        _debug(f"todo sync litellm url error: reason={e.reason}")
+        return []
+    except TimeoutError:
+        _debug("todo sync litellm timeout")
         return []
 
     try:
         doc = json.loads(raw)
         content = str(doc["choices"][0]["message"]["content"])
     except Exception:
+        _debug("todo sync litellm response parse error: missing choices[0].message.content")
         return []
 
     parsed = _extract_json(content)
     if not parsed:
+        _debug("todo sync litellm content parse produced no todos")
         return []
     out: list[str] = []
     for item in parsed:
@@ -374,3 +418,27 @@ def _save_done_ids(path: Path, done_ids: set[str]) -> None:
         json.dumps({"done_ids": sorted(done_ids)}, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _debug(msg: str) -> None:
+    if os.environ.get("MAILTRIAGE_DEBUG"):
+        sys.stderr.write(f"[mailtriage][todo] {msg}\n")
+
+
+def _truthy(value: str | None) -> bool:
+    v = (value or "").strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+
+def _build_ssl_context(cfg: TodoLlmConfig) -> ssl.SSLContext | None:
+    if cfg.insecure_skip_verify:
+        _debug("todo sync ssl verify disabled via MAILTRIAGE_LITELLM_INSECURE_SKIP_VERIFY")
+        return ssl._create_unverified_context()
+    if cfg.ca_bundle:
+        try:
+            ctx = ssl.create_default_context(cafile=cfg.ca_bundle)
+            _debug(f"todo sync using custom CA bundle: {cfg.ca_bundle}")
+            return ctx
+        except Exception as e:
+            _debug(f"todo sync invalid CA bundle '{cfg.ca_bundle}': {e}")
+    return None

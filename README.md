@@ -211,7 +211,15 @@ MAILTRIAGE_LITELLM_API_KEY=
 MAILTRIAGE_LITELLM_TIMEOUT_SEC=20
 MAILTRIAGE_LITELLM_MAX_THREADS=20
 MAILTRIAGE_LITELLM_MAX_TASKS_PER_THREAD=5
+
+# Optional TLS controls (enterprise cert chains)
+MAILTRIAGE_LITELLM_CA_BUNDLE=/path/to/company-ca.pem
+MAILTRIAGE_LITELLM_INSECURE_SKIP_VERIFY=0
 ```
+
+If your LiteLLM endpoint uses an internal/self-signed certificate chain, set
+`MAILTRIAGE_LITELLM_CA_BUNDLE` to your org CA bundle file. Only use
+`MAILTRIAGE_LITELLM_INSECURE_SKIP_VERIFY=1` as a temporary fallback.
 
 Behavior on each `mailtriage run` window:
 
