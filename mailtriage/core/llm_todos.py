@@ -103,10 +103,7 @@ def run_llm_todo_sync(
         if not task:
             continue
         subject = str(item.get("subject") or "").strip()
-        subject_prefix = f"({subject}) " if subject else ""
-        new_lines.append(
-            f"- [ ] {subject_prefix}{task} <!-- mailtriage:id={item_id} -->"
-        )
+        new_lines.extend(_format_todo_block(subject=subject, task=task, item_id=item_id))
         active_ids.add(item_id)
 
     updated_running = _append_to_date_section(kept_lines, today_local, new_lines)
@@ -614,6 +611,27 @@ def _normalize_task(value: str) -> str:
     return s
 
 
+def _split_summary_action(task: str) -> tuple[str, str]:
+    m = re.search(r"\bAction\s*:\s*", task, flags=re.IGNORECASE)
+    if not m:
+        return task.strip(), "Review and follow up as needed"
+    summary = task[: m.start()].strip().rstrip("-:")
+    action = task[m.end() :].strip()
+    if not summary:
+        summary = "Email update"
+    if not action:
+        action = "Review and follow up as needed"
+    return summary, action
+
+
+def _format_todo_block(*, subject: str, task: str, item_id: str) -> list[str]:
+    summary, action = _split_summary_action(task)
+    label = f"({subject}) " if subject else ""
+    top = f"- [ ] {label}{summary}".rstrip()
+    action_line = f"  - Action: {action} <!-- mailtriage:id={item_id} -->"
+    return [top, action_line]
+
+
 def _cleanup_placeholder_entries(lines: list[str]) -> tuple[list[str], int]:
     kept: list[str] = []
     removed = 0
@@ -678,6 +696,9 @@ def _purge_checked_items(lines: list[str]) -> tuple[list[str], list[str], set[st
                     break
                 if nxt.startswith(" ") or nxt.startswith("\t"):
                     moved.append(nxt)
+                    m = _TASK_ID_RE.search(nxt)
+                    if m:
+                        moved_ids.add(m.group(1))
                     i += 1
                     continue
                 break
